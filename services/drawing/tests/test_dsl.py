@@ -142,3 +142,22 @@ def test_freehand_min_two_points_required() -> None:
 
 def test_chunk_size_default_is_in_expected_range() -> None:
     assert 5 <= FREEHAND_CHUNK_SIZE <= 10
+
+
+def test_translate_freehand_rebalances_singleton_tail_chunk() -> None:
+    points = [{"x": i / 20, "y": i / 20} for i in range(9)]
+    req = DrawRequest(
+        session_id="s7",
+        message_type="freehand",
+        payload={
+            "points": points,
+            "color": "#111111",
+            "stroke_width": 2.0,
+            "delay_ms": 40,
+        },
+    )
+
+    msgs = translate(req)
+
+    assert len(msgs) == 2
+    assert all(len(m.payload.points) >= 2 for m in msgs)  # type: ignore[union-attr]

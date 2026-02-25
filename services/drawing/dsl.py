@@ -37,7 +37,15 @@ def _next_message_id() -> str:
 def _chunk_points(points: list[Point], size: int = FREEHAND_CHUNK_SIZE) -> list[list[Point]]:
     if not 5 <= size <= 10:
         raise ValueError("freehand chunk size must be between 5 and 10")
-    return [points[i : i + size] for i in range(0, len(points), size)]
+    chunks = [points[i : i + size] for i in range(0, len(points), size)]
+    # FreehandPayload requires each emitted chunk to contain at least 2 points.
+    # If the last chunk has a single point, rebalance one point from the prior chunk.
+    if len(chunks) >= 2 and len(chunks[-1]) == 1:
+        tail = chunks[-1][0]
+        donor = chunks[-2]
+        chunks[-2] = donor[:-1]
+        chunks[-1] = [donor[-1], tail]
+    return chunks
 
 
 def _transform_template_points(payload: ShapePayload) -> list[Point]:
