@@ -1,4 +1,8 @@
-"""Draw request to DSL translator."""
+"""Draw request to DSL message translator.
+
+Converts a single DrawRequest into one or more versioned DSLMessage objects
+that are broadcast over WebSocket to connected frontends.
+"""
 
 from __future__ import annotations
 
@@ -10,12 +14,14 @@ from models import (
     DrawRequest,
     FreehandPayload,
     HighlightPayload,
+    Point,
     ShapePayload,
     TextPayload,
 )
 from templates import cartesian_axes, circle_outline, number_line, right_triangle
 
 FREEHAND_CHUNK_SIZE = 8
+
 _TEMPLATE_MAP = {
     "right_triangle": right_triangle,
     "circle_outline": circle_outline,
@@ -28,18 +34,20 @@ def _next_message_id() -> str:
     return uuid4().hex[:8]
 
 
-def _chunk_points(points: list, size: int = FREEHAND_CHUNK_SIZE) -> list[list]:
+def _chunk_points(points: list[Point], size: int = FREEHAND_CHUNK_SIZE) -> list[list[Point]]:
     if not 5 <= size <= 10:
         raise ValueError("freehand chunk size must be between 5 and 10")
     return [points[i : i + size] for i in range(0, len(points), size)]
 
 
-def _transform_template_points(payload: ShapePayload) -> list:
+def _transform_template_points(payload: ShapePayload) -> list[Point]:
+    """Look up a named template and transform its normalized points into
+    absolute coordinates using the shape's position and dimensions."""
     template_builder = _TEMPLATE_MAP.get(payload.template_variant or "")
     if template_builder is None:
         return []
 
-    transformed = []
+    transformed: list[Point] = []
     for point in template_builder():
         transformed.append(
             point.model_copy(
@@ -57,8 +65,7 @@ def translate(draw_request: DrawRequest) -> list[DSLMessage]:
     message_type = draw_request.message_type
     payload = draw_request.payload
 
-    if message_type == "freehand":
-        assert isinstance(payload, FreehandPayload)
+    if message_type == "freehand" and isinstance(payload, FreehandPayload):
         chunks = _chunk_points(payload.points)
         return [
             DSLMessage(
@@ -75,8 +82,7 @@ def translate(draw_request: DrawRequest) -> list[DSLMessage]:
             for chunk in chunks
         ]
 
-    if message_type == "shape":
-        assert isinstance(payload, ShapePayload)
+    if message_type == "shape" and isinstance(payload, ShapePayload):
         if payload.template_variant:
             transformed_points = _transform_template_points(payload)
             if not transformed_points:
@@ -107,8 +113,7 @@ def translate(draw_request: DrawRequest) -> list[DSLMessage]:
             )
         ]
 
-    if message_type == "text":
-        assert isinstance(payload, TextPayload)
+    if message_type == "text" and isinstance(payload, TextPayload):
         return [
             DSLMessage(
                 id=_next_message_id(),
@@ -118,8 +123,7 @@ def translate(draw_request: DrawRequest) -> list[DSLMessage]:
             )
         ]
 
-    if message_type == "highlight":
-        assert isinstance(payload, HighlightPayload)
+    if message_type == "highlight" and isinstance(payload, HighlightPayload):
         return [
             DSLMessage(
                 id=_next_message_id(),
@@ -129,8 +133,7 @@ def translate(draw_request: DrawRequest) -> list[DSLMessage]:
             )
         ]
 
-    if message_type == "clear":
-        assert isinstance(payload, ClearPayload)
+    if message_type == "clear" and isinstance(payload, ClearPayload):
         return [
             DSLMessage(
                 id=_next_message_id(),
@@ -140,4 +143,7 @@ def translate(draw_request: DrawRequest) -> list[DSLMessage]:
             )
         ]
 
-    raise ValueError(f"Unsupported message_type: {message_type}")
+    raise ValueError(
+        f"translate: unhandled message_type={message_type!r} "
+        f"with payload type {type(payload).__name__}"
+    )

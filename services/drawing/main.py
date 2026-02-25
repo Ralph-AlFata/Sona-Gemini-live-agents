@@ -1,8 +1,16 @@
-"""Sona Drawing Command Service — FastAPI entry point."""
+"""Sona Drawing Command Service — FastAPI entry point.
+
+Endpoints:
+    GET  /health               → HealthResponse
+    WS   /ws/{session_id}      → Subscribe to DSL messages
+    POST /draw                 → DrawResponse (202 Accepted)
+    POST /draw/clear           → DrawResponse (202 Accepted)
+
+Port: 8002
+"""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from collections import defaultdict
@@ -10,18 +18,16 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import ValidationError
 
 from dsl import translate
 from models import (
     ClearPayload,
-    ClearRequestBody,
-    DrawRequest,
-    DrawRequestBody,
-    DrawResponse,
+    ClearRequest,
     DSLMessage,
+    DrawRequest,
+    DrawResponse,
     HealthResponse,
 )
 
@@ -34,8 +40,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ─── Connection Manager ──────────────────────────────────────────────────────
+
 class ConnectionManager:
-    """Tracks websocket subscribers by session and broadcasts JSON DSL messages."""
+    """Tracks WebSocket subscribers by session and broadcasts JSON DSL messages."""
 
     def __init__(self) -> None:
         self._connections: dict[str, set[WebSocket]] = defaultdict(set)
@@ -65,9 +73,17 @@ class ConnectionManager:
         )
 
     async def broadcast(self, session_id: str, message: DSLMessage) -> int:
+        """Send a DSL message to all subscribers for a session.
+
+        Returns the number of subscribers that received the message.
+        """
         subscribers = self._connections.get(session_id)
         if not subscribers:
-            logger.info("No subscribers for session_id=%s; dropped message id=%s", session_id, message.id)
+            logger.info(
+                "No subscribers for session_id=%s; dropped message id=%s",
+                session_id,
+                message.id,
+            )
             return 0
 
         dead: list[WebSocket] = []
@@ -77,6 +93,11 @@ class ConnectionManager:
             try:
                 await socket.send_json(payload)
             except Exception:
+                logger.warning(
+                    "Dead socket detected for session_id=%s; removing",
+                    session_id,
+                    exc_info=True,
+                )
                 dead.append(socket)
 
         for socket in dead:
@@ -95,12 +116,16 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# ─── Lifespan ─────────────────────────────────────────────────────────────────
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Drawing service starting up on port %s", os.environ.get("PORT", "8002"))
     yield
     logger.info("Drawing service shutting down")
 
+
+# ─── App ──────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Sona Drawing Command Service",
@@ -126,6 +151,8 @@ app.add_middleware(
 )
 
 
+# ─── Endpoints ────────────────────────────────────────────────────────────────
+
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
 async def health_check() -> HealthResponse:
     return HealthResponse()
@@ -147,26 +174,19 @@ async def websocket_session(session_id: str, websocket: WebSocket) -> None:
     status_code=status.HTTP_202_ACCEPTED,
     tags=["drawing"],
 )
-async def draw(body: DrawRequestBody) -> DrawResponse:
-    try:
-        draw_request = body.to_draw_request()
-    except ValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=exc.errors(),
-        ) from exc
-    messages = translate(draw_request)
+async def draw(body: DrawRequest) -> DrawResponse:
+    messages = translate(body)
 
     for message in messages:
-        asyncio.create_task(manager.broadcast(draw_request.session_id, message))
+        await manager.broadcast(body.session_id, message)
 
     logger.info(
         "Draw accepted: session_id=%s type=%s emitted=%d",
-        draw_request.session_id,
-        draw_request.message_type,
+        body.session_id,
+        body.message_type,
         len(messages),
     )
-    return DrawResponse(session_id=draw_request.session_id, emitted_count=len(messages))
+    return DrawResponse(session_id=body.session_id, emitted_count=len(messages))
 
 
 @app.post(
@@ -175,7 +195,7 @@ async def draw(body: DrawRequestBody) -> DrawResponse:
     status_code=status.HTTP_202_ACCEPTED,
     tags=["drawing"],
 )
-async def clear_canvas(body: ClearRequestBody) -> DrawResponse:
+async def clear_canvas(body: ClearRequest) -> DrawResponse:
     draw_request = DrawRequest(
         session_id=body.session_id,
         message_type="clear",
@@ -184,7 +204,7 @@ async def clear_canvas(body: ClearRequestBody) -> DrawResponse:
     messages = translate(draw_request)
 
     for message in messages:
-        asyncio.create_task(manager.broadcast(draw_request.session_id, message))
+        await manager.broadcast(draw_request.session_id, message)
 
     logger.info("Clear accepted: session_id=%s", draw_request.session_id)
     return DrawResponse(session_id=draw_request.session_id, emitted_count=len(messages))

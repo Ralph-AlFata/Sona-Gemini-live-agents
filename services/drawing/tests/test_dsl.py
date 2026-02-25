@@ -22,9 +22,9 @@ def test_translate_freehand_chunks_and_preserves_order() -> None:
     msgs = translate(req)
 
     assert len(msgs) == 3
-    flattened = [p for m in msgs for p in m.payload.points]  # type: ignore[attr-defined]
+    flattened = [p for m in msgs for p in m.payload.points]  # type: ignore[union-attr]
     assert [p.x for p in flattened] == [i / 20 for i in range(20)]
-    assert all(m.payload.delay_ms == 40 for m in msgs)  # type: ignore[attr-defined]
+    assert all(m.payload.delay_ms == 40 for m in msgs)  # type: ignore[union-attr]
     assert all(len(m.id) == 8 for m in msgs)
 
 
@@ -48,8 +48,8 @@ def test_translate_template_shape_to_freehand_messages() -> None:
     assert len(msgs) == 1
     assert msgs[0].type == "freehand"
     payload = msgs[0].payload
-    assert payload.points[0].x == pytest.approx(0.15)
-    assert payload.points[0].y == pytest.approx(0.74)
+    assert payload.points[0].x == pytest.approx(0.15)  # type: ignore[union-attr]
+    assert payload.points[0].y == pytest.approx(0.74)  # type: ignore[union-attr]
 
 
 def test_translate_plain_shape_single_message() -> None:
@@ -118,10 +118,24 @@ def test_invalid_coordinates_raise_validation_error() -> None:
             session_id="s5",
             message_type="freehand",
             payload={
-                "points": [{"x": 1.1, "y": 0.1}],
+                "points": [{"x": 1.1, "y": 0.1}, {"x": 0.2, "y": 0.3}],
                 "color": "#111111",
                 "stroke_width": 2.0,
                 "delay_ms": 40,
+            },
+        )
+
+
+def test_freehand_min_two_points_required() -> None:
+    with pytest.raises(Exception):
+        DrawRequest(
+            session_id="s6",
+            message_type="freehand",
+            payload={
+                "points": [{"x": 0.1, "y": 0.1}],
+                "color": "#000",
+                "stroke_width": 2.0,
+                "delay_ms": 30,
             },
         )
 

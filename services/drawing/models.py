@@ -1,4 +1,4 @@
-"""Pydantic models for the Sona Drawing Command Service."""
+"""Pydantic v2 models for the Sona Drawing Command Service."""
 
 from __future__ import annotations
 
@@ -8,15 +8,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+# ─── Shared config ────────────────────────────────────────────────────────────
+
 class _StrictBase(BaseModel):
-    """Base strict model used across request/response contracts."""
+    """Base model with strict mode for all drawing service models."""
 
     model_config = ConfigDict(
         strict=True,
-        extra="forbid",
+        frozen=False,
         populate_by_name=True,
+        extra="forbid",
     )
 
+
+# ─── Payload types ────────────────────────────────────────────────────────────
 
 class Point(_StrictBase):
     """Normalized canvas point where x and y are both within [0, 1]."""
@@ -26,13 +31,17 @@ class Point(_StrictBase):
 
 
 class FreehandPayload(_StrictBase):
-    points: list[Point] = Field(min_length=1)
+    """Points for a freehand stroke with visual properties."""
+
+    points: list[Point] = Field(min_length=2)
     color: str = Field(min_length=1, max_length=64)
     stroke_width: float = Field(gt=0.0, le=64.0)
     delay_ms: int = Field(ge=0, le=1_000)
 
 
 class ShapePayload(_StrictBase):
+    """A geometric shape with position, size, and optional template variant."""
+
     shape: Literal["rectangle", "ellipse", "line", "triangle", "polygon"]
     x: float = Field(ge=0.0, le=1.0)
     y: float = Field(ge=0.0, le=1.0)
@@ -49,6 +58,8 @@ class ShapePayload(_StrictBase):
 
 
 class TextPayload(_StrictBase):
+    """Text to render at a normalized position."""
+
     text: str = Field(min_length=1, max_length=2_000)
     x: float = Field(ge=0.0, le=1.0)
     y: float = Field(ge=0.0, le=1.0)
@@ -57,6 +68,8 @@ class TextPayload(_StrictBase):
 
 
 class HighlightPayload(_StrictBase):
+    """A rectangular highlight region."""
+
     x: float = Field(ge=0.0, le=1.0)
     y: float = Field(ge=0.0, le=1.0)
     width: float = Field(gt=0.0, le=1.0)
@@ -65,62 +78,59 @@ class HighlightPayload(_StrictBase):
 
 
 class ClearPayload(_StrictBase):
+    """Payload for clearing the canvas."""
+
     mode: Literal["full"] = "full"
 
 
+# ─── Draw message type ────────────────────────────────────────────────────────
+
 DrawMessageType = Literal["freehand", "shape", "text", "highlight", "clear"]
 
+_PAYLOAD_MODEL_MAP: dict[str, type[BaseModel]] = {
+    "freehand": FreehandPayload,
+    "shape": ShapePayload,
+    "text": TextPayload,
+    "highlight": HighlightPayload,
+    "clear": ClearPayload,
+}
+
+
+# ─── Draw request ─────────────────────────────────────────────────────────────
 
 class DrawRequest(_StrictBase):
+    """Incoming draw command — used directly as the POST /draw request body."""
+
     session_id: str = Field(min_length=1, max_length=128)
     message_type: DrawMessageType
-    payload: FreehandPayload | ShapePayload | TextPayload | HighlightPayload | ClearPayload | dict[str, Any]
+    payload: FreehandPayload | ShapePayload | TextPayload | HighlightPayload | ClearPayload
 
-    @model_validator(mode="after")
-    def validate_payload_type(self) -> "DrawRequest":
-        payload_model: type[BaseModel]
-        if self.message_type == "freehand":
-            payload_model = FreehandPayload
-        elif self.message_type == "shape":
-            payload_model = ShapePayload
-        elif self.message_type == "text":
-            payload_model = TextPayload
-        elif self.message_type == "highlight":
-            payload_model = HighlightPayload
-        else:
-            payload_model = ClearPayload
-
-        if isinstance(self.payload, payload_model):
-            return self
-
-        if isinstance(self.payload, dict):
-            self.payload = payload_model.model_validate(self.payload)
-            return self
-
-        raise ValueError(
-            f"payload does not match message_type={self.message_type!r}; "
-            f"expected {payload_model.__name__}"
-        )
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_payload(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        msg_type = data.get("message_type")
+        payload = data.get("payload")
+        if not isinstance(payload, dict):
+            return data
+        model_cls = _PAYLOAD_MODEL_MAP.get(msg_type or "")
+        if model_cls is not None:
+            data = {**data, "payload": model_cls.model_validate(payload)}
+        return data
 
 
-class DrawRequestBody(_StrictBase):
-    session_id: str = Field(min_length=1, max_length=128)
-    message_type: Literal["freehand", "shape", "text", "highlight"]
-    payload: FreehandPayload | ShapePayload | TextPayload | HighlightPayload | dict[str, Any]
+class ClearRequest(_StrictBase):
+    """Request body for POST /draw/clear."""
 
-    def to_draw_request(self) -> DrawRequest:
-        return DrawRequest(
-            session_id=self.session_id,
-            message_type=self.message_type,
-            payload=self.payload,
-        )
-
-
-class ClearRequestBody(_StrictBase):
     session_id: str = Field(min_length=1, max_length=128)
 
+
+# ─── DSL message ──────────────────────────────────────────────────────────────
 
 class DSLMessage(_StrictBase):
+    """Versioned DSL message broadcast over WebSocket to frontends."""
+
     version: Literal["1.0"] = "1.0"
     id: str = Field(min_length=8, max_length=8)
     session_id: str = Field(min_length=1, max_length=128)
@@ -129,11 +139,17 @@ class DSLMessage(_StrictBase):
     payload: FreehandPayload | ShapePayload | TextPayload | HighlightPayload | ClearPayload
 
 
+# ─── API response models ─────────────────────────────────────────────────────
+
 class DrawResponse(_StrictBase):
+    """Response for POST /draw and POST /draw/clear."""
+
     session_id: str
     emitted_count: int = Field(ge=0)
 
 
 class HealthResponse(_StrictBase):
+    """Response for GET /health."""
+
     status: Literal["ok"] = "ok"
     service: Literal["drawing"] = "drawing"

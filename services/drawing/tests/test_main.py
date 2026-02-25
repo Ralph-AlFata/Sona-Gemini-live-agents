@@ -63,7 +63,7 @@ def test_draw_all_supported_types_accept_202() -> None:
 
         for body in cases:
             response = client.post("/draw", json=body)
-            assert response.status_code == 202
+            assert response.status_code == 202, f"Failed for {body['message_type']}"
             assert response.json()["session_id"] == "s1"
             assert response.json()["emitted_count"] >= 1
 
@@ -76,7 +76,7 @@ def test_draw_invalid_payload_returns_422() -> None:
                 "session_id": "s1",
                 "message_type": "freehand",
                 "payload": {
-                    "points": [{"x": 1.5, "y": 0.1}],
+                    "points": [{"x": 1.5, "y": 0.1}, {"x": 0.2, "y": 0.3}],
                     "color": "#000",
                     "stroke_width": 2.0,
                     "delay_ms": 30,

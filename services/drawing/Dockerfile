@@ -11,9 +11,11 @@ ENV UV_LINK_MODE=copy
 
 WORKDIR /app
 
+# Install dependencies first (cached until deps change)
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --frozen --no-install-project --no-editable
 
+# Copy source (invalidates only when source changes)
 COPY . .
 
 # ─── Stage 2: runtime ────────────────────────────────────────────────────────
