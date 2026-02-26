@@ -1,0 +1,33 @@
+[project]
+name = "sona-session"
+version = "0.1.0"
+description = "Sona Session Service — FastAPI CRUD for session lifecycle"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]>=0.133.0",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.10.0",
+    "google-auth>=2.48.0",
+    "google-cloud-firestore>=2.23.0",
+    "google-cloud-storage>=3.9.0",
+    "python-dotenv>=1.0.1",
+    "httpx>=0.28.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = []
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
