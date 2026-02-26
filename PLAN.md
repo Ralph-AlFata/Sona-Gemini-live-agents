@@ -1,7 +1,7 @@
 # Sona — Build Plan & Task List
 
 ## Project State
-**Greenfield.** Only `CLAUDE.md`, `.gitignore`, `.env` (empty), and empty service directories exist. Everything must be built from scratch.
+**In progress.** Root scaffolding, session service, drawing service, and a partial frontend are implemented. Orchestrator, infra, and full integration are still pending.
 
 **Deadline:** March 16, 2026 (~19 days)
 
@@ -27,8 +27,8 @@ Phase 5 (infra, parallel)          ─┘                                       
 ## Tasks
 
 ### Phase 0 — Root Scaffolding
-- [ ] **0.1** Create `docker-compose.yml` — 4 services (session:8003, drawing:8002, orchestrator:8001, frontend:3000), shared `sona-net` network, `env_file: .env`, health checks, `depends_on` chain
-- [ ] **0.2** Create `.env.example` — document: GOOGLE_API_KEY, GOOGLE_CLOUD_PROJECT, GOOGLE_GENAI_USE_VERTEXAI, FIRESTORE_DATABASE, GCS_BUCKET, DRAWING_SERVICE_URL, SESSION_SERVICE_URL
+- [x] **0.1** Create `docker-compose.yml` — 4 services (session:8003, drawing:8002, orchestrator:8001, frontend:3000), shared `sona-net` network, `env_file: .env`, health checks, `depends_on` chain
+- [x] **0.2** Create `.env.example` — document: GOOGLE_API_KEY, GOOGLE_CLOUD_PROJECT, GOOGLE_GENAI_USE_VERTEXAI, FIRESTORE_DATABASE, GCS_BUCKET, DRAWING_SERVICE_URL, SESSION_SERVICE_URL
 - [ ] **0.3** Update `README.md` — setup instructions, architecture diagram embed, env vars table, docker-compose quick start
 
 ---
@@ -36,12 +36,12 @@ Phase 5 (infra, parallel)          ─┘                                       
 ### Phase 1 — Session Service (`services/session/`)
 > Simplest service. Pure CRUD. Must work before orchestrator.
 
-- [*] **1.1** Create `pyproject.toml` — deps: `fastapi[standard]`, `uvicorn[standard]`, `pydantic>=2`, `google-cloud-firestore`, `google-cloud-storage`, `python-dotenv`, `httpx`
-- [*] **1.2** Create `Dockerfile` — uv-based image, exposes port 8003
-- [*] **1.3** Create `models.py` — `Session`, `SessionCreate`, `ConversationTurn`, `CanvasSnapshot` (Pydantic v2, strict types)
-- [*] **1.4** Create `firestore.py` — `AsyncClient`; ops: `create_session`, `get_session`, `append_turn`, `update_snapshot_url`; collection: `sessions`, doc ID = `session_id`
-- [*] **1.5** Create `storage.py` — upload PNG bytes to GCS bucket `sona-canvases`; path: `snapshots/{session_id}/{timestamp}.png`; return public URL
-- [*] **1.6** Create `main.py` — endpoints: `POST /sessions`, `GET /sessions/{id}`, `POST /sessions/{id}/turns`, `POST /sessions/{id}/snapshot`, `DELETE /sessions/{id}`, `GET /health`; use `lifespan` context manager
+- [x] **1.1** Create `pyproject.toml` — deps: `fastapi[standard]`, `uvicorn[standard]`, `pydantic>=2`, `google-cloud-firestore`, `google-cloud-storage`, `python-dotenv`, `httpx`
+- [x] **1.2** Create `Dockerfile` — uv-based image, exposes port 8003
+- [x] **1.3** Create `models.py` — `Session`, `SessionCreate`, `ConversationTurn`, `CanvasSnapshot` (Pydantic v2, strict types)
+- [x] **1.4** Create `firestore.py` — `AsyncClient`; ops: `create_session`, `get_session`, `append_turn`, `update_snapshot_url`; collection: `sessions`, doc ID = `session_id`
+- [x] **1.5** Create `storage.py` — upload PNG bytes to GCS bucket `sona-canvases`; path: `snapshots/{session_id}/{timestamp}.png`; return public URL
+- [x] **1.6** Create `main.py` — endpoints: `POST /sessions`, `GET /sessions/{id}`, `POST /sessions/{id}/turns`, `POST /sessions/{id}/snapshot`, `DELETE /sessions/{id}`, `GET /health`; use `lifespan` context manager
 
 **Checkpoint:** `curl localhost:8003/health` → 200; `POST /sessions` creates Firestore doc
 
@@ -50,12 +50,12 @@ Phase 5 (infra, parallel)          ─┘                                       
 ### Phase 2 — Drawing Command Service (`services/drawing/`)
 > Translates orchestrator tool calls → stroke DSL → WebSocket broadcast to frontend.
 
-- [ ] **2.1** Create `pyproject.toml` — deps: `fastapi[standard]`, `uvicorn[standard]`, `pydantic>=2`, `python-dotenv`, `websockets`, `httpx`, `sympy`
-- [ ] **2.2** Create `Dockerfile` — port 8002
-- [ ] **2.3** Create `models.py` — `Point` (normalized 0–1), `FreehandPayload`, `ShapePayload`, `TextPayload`, `HighlightPayload`, `DSLMessage`, `DrawRequest`
-- [ ] **2.4** Create `dsl.py` — `translate(draw_request: DrawRequest) -> list[DSLMessage]`; freehand chunks points into batches of 5–10 for progressive effect; shapes emit single instant message; text/highlight are direct passthroughs; generate ID with `uuid.uuid4().hex[:8]`
-- [ ] **2.5** Create `templates.py` — normalized-coord point sequences: `right_triangle()`, `circle_outline()`, `number_line()`, `cartesian_axes()`
-- [ ] **2.6** Create `main.py` — `ConnectionManager` class (`session_id → set[WebSocket]`); `WS /ws/{session_id}`; `POST /draw` → translate → `asyncio.create_task(broadcast)`; `POST /draw/clear`; `GET /health`
+- [x] **2.1** Create `pyproject.toml` — deps: `fastapi[standard]`, `uvicorn[standard]`, `pydantic>=2`, `python-dotenv`, `websockets`, `httpx`, `sympy`
+- [x] **2.2** Create `Dockerfile` — port 8002
+- [x] **2.3** Create `models.py` — `Point` (normalized 0–1), `FreehandPayload`, `ShapePayload`, `TextPayload`, `HighlightPayload`, `DSLMessage`, `DrawRequest`
+- [x] **2.4** Create `dsl.py` — `translate(draw_request: DrawRequest) -> list[DSLMessage]`; freehand chunks points into batches of 5–10 for progressive effect; shapes emit single instant message; text/highlight are direct passthroughs; generate ID with `uuid.uuid4().hex[:8]`
+- [x] **2.5** Create `templates.py` — normalized-coord point sequences: `right_triangle()`, `circle_outline()`, `number_line()`, `cartesian_axes()`
+- [*] **2.6** Create `main.py` — `ConnectionManager` class (`session_id → set[WebSocket]`); `WS /ws/{session_id}`; `POST /draw` → translate → `asyncio.create_task(broadcast)`; `POST /draw/clear`; `GET /health`
 
 **Checkpoint:** `wscat -c ws://localhost:8002/ws/test` in tab 1; `POST /draw` in tab 2 → JSON DSL message appears in tab 1
 
@@ -88,20 +88,20 @@ Phase 5 (infra, parallel)          ─┘                                       
 ---
 
 ### Phase 4 — Frontend (`frontend/`)
-> React 18 + TypeScript + Vite + Fabric.js canvas + two WebSocket connections.
+> Partially implemented. Current stack is React 18 + TypeScript + Vite + Konva canvas + drawing WebSocket only.
 
-- [ ] **4.1** Create `package.json` — deps: `react@^18`, `react-dom@^18`, `fabric@^6.4`; dev deps: `@types/react`, `@vitejs/plugin-react`, `typescript@^5`, `vite@^5`
-- [ ] **4.2** Create `tsconfig.json` — `strict: true`, `target: "ES2022"`, `lib: ["ES2022", "DOM"]`
-- [ ] **4.3** Create `vite.config.ts` — dev proxy: `/api/orchestrator` → `http://localhost:8001`, `/api/drawing` → `http://localhost:8002`
-- [ ] **4.4** Create `index.html`
+- [*] **4.1** Create `package.json` — deps: `react@^18`, `react-dom@^18`, `fabric@^6.4`; dev deps: `@types/react`, `@vitejs/plugin-react`, `typescript@^5`, `vite@^5`
+- [x] **4.2** Create `tsconfig.json` — `strict: true`, `target: "ES2022"`, `lib: ["ES2022", "DOM"]`
+- [*] **4.3** Create `vite.config.ts` — dev proxy: `/api/orchestrator` → `http://localhost:8001`, `/api/drawing` → `http://localhost:8002`
+- [x] **4.4** Create `index.html`
 - [ ] **4.5** Create `src/types/dsl.ts` — `Point`, `FreehandPayload`, `ShapePayload`, `TextPayload`, `HighlightPayload`, `DSLMessage`, `DSLMessageType` union
 - [ ] **4.6** Create `src/types/session.ts` — `SessionState` with status: `'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking'`
-- [ ] **4.7** Create `src/hooks/useWebSocket.ts` — manages WS ref, reconnect with exponential backoff (1s → 2s → 4s → max 30s)
+- [*] **4.7** Create `src/hooks/useWebSocket.ts` — manages WS ref, reconnect with exponential backoff (1s → 2s → 4s → max 30s)
 - [ ] **4.8** Create `src/hooks/useAudio.ts` — **capture:** `getUserMedia` at 16kHz, `ScriptProcessorNode`, Float32→Int16 PCM → WS bytes; **playback:** receive PCM at 24kHz, schedule via `AudioContext.currentTime`
 - [ ] **4.9** Create `src/hooks/useSession.ts` — check localStorage for sessionId; POST to create if missing; sync to URL `?session=<id>`
 - [ ] **4.10** Create `src/services/audioProcessor.ts` — `float32ToInt16()`, `int16ToFloat32()` utilities
 - [ ] **4.11** Create `src/services/canvasExporter.ts` — `exportCanvas(canvas): string` returns base64 JPEG (no `data:` prefix)
-- [ ] **4.12** Create `src/services/drawingRenderer.ts` — `DrawingRenderer` class:
+- [*] **4.12** Create `src/services/drawingRenderer.ts` — `DrawingRenderer` class:
   - `activePaths: Map<string, {path: fabric.Path, points: Point[]}>`
   - `processMessage(msg: DSLMessage)` dispatcher
   - `extendPath()` — accumulate points, rebuild SVG path string, `path.set({path: parsedPath})` + `canvas.renderAll()` + `delay(speed ms)` per batch (progressive animation)
@@ -110,11 +110,11 @@ Phase 5 (infra, parallel)          ─┘                                       
 - [ ] **4.13** Create `src/components/StatusIndicator.tsx` — visual states: idle / connecting / listening (green pulse) / thinking (yellow spin) / speaking (blue bars)
 - [ ] **4.14** Create `src/components/SessionControls.tsx` — Mute/Unmute, Clear Canvas (`POST /draw/clear`), End Session buttons
 - [ ] **4.15** Create `src/components/AudioManager.tsx` — orchestrator WS, `useAudio` hook, updates status on `turn_complete` / `interrupted` / audio bytes
-- [ ] **4.16** Create `src/components/Whiteboard.tsx` — Fabric.js canvas, drawing service WS, silence-based snapshot trigger (1.5s inactivity → `exportAsJPEG` → send to orchestrator WS)
-- [ ] **4.17** Create `src/App.tsx` — layout: top bar (logo + StatusIndicator + SessionControls) + main Whiteboard
-- [ ] **4.18** Create `src/main.tsx` — React entry point
-- [ ] **4.19** Create `Dockerfile` — multi-stage: `node:20-alpine` builder → `nginx:alpine`; port 3000
-- [ ] **4.20** Create `nginx.conf` — serve `/` → index.html
+- [*] **4.16** Create `src/components/Whiteboard.tsx` — Fabric.js canvas, drawing service WS, silence-based snapshot trigger (1.5s inactivity → `exportAsJPEG` → send to orchestrator WS)
+- [*] **4.17** Create `src/App.tsx` — layout: top bar (logo + StatusIndicator + SessionControls) + main Whiteboard
+- [x] **4.18** Create `src/main.tsx` — React entry point
+- [x] **4.19** Create `Dockerfile` — multi-stage: `node:20-alpine` builder → `nginx:alpine`; port 3000
+- [x] **4.20** Create `nginx.conf` — serve `/` → index.html
 
 **Checkpoint:** Open http://localhost:3000, say "explain Pythagorean theorem" → hear voice AND see triangle drawn simultaneously
 
@@ -136,7 +136,7 @@ Phase 5 (infra, parallel)          ─┘                                       
 
 - [ ] **6.1** Thread `session_id` through tool context — verify `tool_context.state["session_id"]` works in each tool; fallback: inject as explicit LLM-visible tool argument
 - [ ] **6.2** Validate canvas snapshot flow — 1.5s silence → JPEG export → orchestrator WS → `analyze_canvas` tool fires → Sona responds
-- [ ] **6.3** Add `CORSMiddleware` to all FastAPI services (allow localhost:3000 + Cloud Run URLs)
+- [*] **6.3** Add `CORSMiddleware` to all FastAPI services (allow localhost:3000 + Cloud Run URLs)
 - [ ] **6.4** Validate interruption/barge-in — frontend drains PCM buffer on `{"type":"interrupted"}`; Gemini VAD handles the rest
 - [ ] **6.5** Run full end-to-end test sequence:
   - "What topics can you help with?" → voice only, no drawing
@@ -163,7 +163,7 @@ Phase 5 (infra, parallel)          ─┘                                       
 |------|-----------|
 | `gemini-2.0-flash-live-001` model issues | Test immediately after Phase 3 orchestrator skeleton. Switch model name if needed. |
 | ADK `ToolContext` / session_id threading | Test in Phase 3 before building frontend. Fallback: pass session_id as explicit tool arg. |
-| Fabric.js path extension performance | Cap strokes at 500 points; start new segment if exceeded. |
+| Canvas progressive rendering performance | Cap points per active stroke and tune interpolation/delay constants to avoid UI jank. |
 | PCM sample rate mismatch | Test 16kHz capture → Gemini → 24kHz playback in isolation before canvas integration. |
 | WS reconnect loops | Exponential backoff with 30s ceiling in `useWebSocket.ts`. |
 
@@ -173,7 +173,8 @@ Phase 5 (infra, parallel)          ─┘                                       
 - `services/orchestrator/main.py` — ADK streaming loop, LiveRequestQueue, event routing
 - `services/orchestrator/agent/agent.py` — model name + tool registration
 - `services/drawing/main.py` — ConnectionManager broadcast logic
-- `frontend/src/services/drawingRenderer.ts` — Fabric.js progressive path extension
+- `frontend/src/components/Whiteboard.tsx` — Konva progressive stroke rendering and message processing queue
+- `frontend/src/services/drawingSocket.ts` — WebSocket lifecycle and reconnect behavior
 - `frontend/src/hooks/useAudio.ts` — PCM capture at 16kHz + playback at 24kHz
 
 ---
