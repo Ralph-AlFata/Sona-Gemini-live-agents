@@ -36,12 +36,12 @@ Phase 5 (infra, parallel)          ─┘                                       
 ### Phase 1 — Session Service (`services/session/`)
 > Simplest service. Pure CRUD. Must work before orchestrator.
 
-- [ ] **1.1** Create `pyproject.toml` — deps: `fastapi[standard]`, `uvicorn[standard]`, `pydantic>=2`, `google-cloud-firestore`, `google-cloud-storage`, `python-dotenv`, `httpx`
-- [ ] **1.2** Create `Dockerfile` — uv-based image, exposes port 8003
-- [ ] **1.3** Create `models.py` — `Session`, `SessionCreate`, `ConversationTurn`, `CanvasSnapshot` (Pydantic v2, strict types)
-- [ ] **1.4** Create `firestore.py` — `AsyncClient`; ops: `create_session`, `get_session`, `append_turn`, `update_snapshot_url`; collection: `sessions`, doc ID = `session_id`
-- [ ] **1.5** Create `storage.py` — upload PNG bytes to GCS bucket `sona-canvases`; path: `snapshots/{session_id}/{timestamp}.png`; return public URL
-- [ ] **1.6** Create `main.py` — endpoints: `POST /sessions`, `GET /sessions/{id}`, `POST /sessions/{id}/turns`, `POST /sessions/{id}/snapshot`, `DELETE /sessions/{id}`, `GET /health`; use `lifespan` context manager
+- [*] **1.1** Create `pyproject.toml` — deps: `fastapi[standard]`, `uvicorn[standard]`, `pydantic>=2`, `google-cloud-firestore`, `google-cloud-storage`, `python-dotenv`, `httpx`
+- [*] **1.2** Create `Dockerfile` — uv-based image, exposes port 8003
+- [*] **1.3** Create `models.py` — `Session`, `SessionCreate`, `ConversationTurn`, `CanvasSnapshot` (Pydantic v2, strict types)
+- [*] **1.4** Create `firestore.py` — `AsyncClient`; ops: `create_session`, `get_session`, `append_turn`, `update_snapshot_url`; collection: `sessions`, doc ID = `session_id`
+- [*] **1.5** Create `storage.py` — upload PNG bytes to GCS bucket `sona-canvases`; path: `snapshots/{session_id}/{timestamp}.png`; return public URL
+- [*] **1.6** Create `main.py` — endpoints: `POST /sessions`, `GET /sessions/{id}`, `POST /sessions/{id}/turns`, `POST /sessions/{id}/snapshot`, `DELETE /sessions/{id}`, `GET /health`; use `lifespan` context manager
 
 **Checkpoint:** `curl localhost:8003/health` → 200; `POST /sessions` creates Firestore doc
 

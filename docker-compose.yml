@@ -1,0 +1,66 @@
+services:
+  session:
+    build:
+      context: ./services/session
+    ports:
+      - "8003:8003"
+    env_file: .env
+    networks:
+      - sona-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  drawing:
+    build:
+      context: ./services/drawing
+    ports:
+      - "8002:8002"
+    env_file: .env
+    networks:
+      - sona-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  orchestrator:
+    build:
+      context: ./services/orchestrator
+    ports:
+      - "8001:8001"
+    env_file: .env
+    networks:
+      - sona-net
+    depends_on:
+      session:
+        condition: service_healthy
+      drawing:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    env_file: .env
+    networks:
+      - sona-net
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
+networks:
+  sona-net:
+    driver: bridge
