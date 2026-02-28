@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Stage, Layer, Rect, Text, Line } from "react-konva";
+import type { Stage as KonvaStage } from "konva/lib/Stage";
 import type { DSLMessageRaw } from "../services/drawingSocket";
 
 interface PointNorm {
@@ -21,6 +22,7 @@ interface StrokeItem {
   points: PointNorm[];
   color: string;
   strokeWidth: number;
+  owner: "user" | "agent";
 }
 
 interface HighlightItem {
@@ -145,14 +147,84 @@ function shapeToPoints(payload: Record<string, unknown>): PointNorm[] {
 
 export function Whiteboard({ messages }: WhiteboardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<KonvaStage | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [textItems, setTextItems] = useState<TextItem[]>([]);
   const [strokes, setStrokes] = useState<StrokeItem[]>([]);
   const [highlights, setHighlights] = useState<HighlightItem[]>([]);
+  const [localStroke, setLocalStroke] = useState<PointNorm[]>([]);
+  const [toolMode, setToolMode] = useState<"draw" | "delete">("draw");
   const queueRef = useRef<DSLMessageRaw[]>([]);
   const processedCountRef = useRef(0);
   const processingRef = useRef(false);
   const unmountedRef = useRef(false);
+  const isDrawingRef = useRef(false);
+  const localPointsRef = useRef<PointNorm[]>([]);
+
+  function getNormalizedPointer(): PointNorm | null {
+    const stage = stageRef.current;
+    if (!stage || dimensions.width <= 0 || dimensions.height <= 0) return null;
+    const pointer = stage.getPointerPosition();
+    if (!pointer) return null;
+    return {
+      x: Math.max(0, Math.min(1, pointer.x / dimensions.width)),
+      y: Math.max(0, Math.min(1, pointer.y / dimensions.height)),
+    };
+  }
+
+  function isFarEnough(nextPoint: PointNorm): boolean {
+    const previous = localPointsRef.current[localPointsRef.current.length - 1];
+    if (!previous) return true;
+    const dx = nextPoint.x - previous.x;
+    const dy = nextPoint.y - previous.y;
+    return Math.sqrt(dx * dx + dy * dy) >= 0.0015;
+  }
+
+  function handleDrawStart(): void {
+    if (toolMode !== "draw") return;
+    const point = getNormalizedPointer();
+    if (!point) return;
+    isDrawingRef.current = true;
+    localPointsRef.current = [point];
+    setLocalStroke([point]);
+  }
+
+  function handleDrawMove(): void {
+    if (toolMode !== "draw") return;
+    if (!isDrawingRef.current) return;
+    const point = getNormalizedPointer();
+    if (!point || !isFarEnough(point)) return;
+    const next = [...localPointsRef.current, point];
+    localPointsRef.current = next;
+    setLocalStroke(next);
+  }
+
+  function handleDrawEnd(): void {
+    if (toolMode !== "draw") return;
+    if (!isDrawingRef.current) return;
+    isDrawingRef.current = false;
+    const points = localPointsRef.current;
+    localPointsRef.current = [];
+    setLocalStroke([]);
+    if (points.length < 2) return;
+    setStrokes((prev) => [
+      ...prev,
+      {
+        id: `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        points,
+        color: "#111",
+        strokeWidth: 2,
+        owner: "user",
+      },
+    ]);
+  }
+
+  function handleDeleteStroke(strokeId: string): void {
+    if (toolMode !== "delete") return;
+    setStrokes((prev) =>
+      prev.filter((stroke) => !(stroke.id === strokeId && stroke.owner === "user")),
+    );
+  }
 
   async function animateStroke(
     strokeId: string,
@@ -220,6 +292,8 @@ export function Whiteboard({ messages }: WhiteboardProps) {
           setTextItems([]);
           setStrokes([]);
           setHighlights([]);
+          setLocalStroke([]);
+          localPointsRef.current = [];
           continue;
         }
 
@@ -274,6 +348,7 @@ export function Whiteboard({ messages }: WhiteboardProps) {
               points: [firstPoint],
               color: asString(payload["color"], "#111"),
               strokeWidth: asNumber(payload["stroke_width"], 2),
+              owner: "agent",
             },
           ]);
           const stepDelay = Math.max(
@@ -300,6 +375,7 @@ export function Whiteboard({ messages }: WhiteboardProps) {
               points: [firstPoint],
               color: asString(payload["color"], "#111"),
               strokeWidth: 2,
+              owner: "agent",
             },
           ]);
 
@@ -315,10 +391,65 @@ export function Whiteboard({ messages }: WhiteboardProps) {
   return (
     <div
       ref={containerRef}
-      style={{ width: "100%", height: "100%", background: "#f5f5f5" }}
+      style={{ width: "100%", height: "100%", background: "#f5f5f5", position: "relative" }}
     >
+      <div
+        style={{
+          position: "absolute",
+          top: 12,
+          right: 12,
+          zIndex: 5,
+          display: "flex",
+          gap: 8,
+          padding: 6,
+          borderRadius: 8,
+          background: "rgba(255,255,255,0.9)",
+          border: "1px solid #ddd",
+        }}
+      >
+        <button
+          onClick={() => setToolMode("draw")}
+          style={{
+            padding: "6px 10px",
+            borderRadius: 6,
+            border: "1px solid #ccc",
+            background: toolMode === "draw" ? "#111" : "#fff",
+            color: toolMode === "draw" ? "#fff" : "#111",
+            fontSize: 12,
+            cursor: "pointer",
+          }}
+        >
+          Draw
+        </button>
+        <button
+          onClick={() => setToolMode("delete")}
+          style={{
+            padding: "6px 10px",
+            borderRadius: 6,
+            border: "1px solid #ccc",
+            background: toolMode === "delete" ? "#111" : "#fff",
+            color: toolMode === "delete" ? "#fff" : "#111",
+            fontSize: 12,
+            cursor: "pointer",
+          }}
+        >
+          Delete
+        </button>
+      </div>
       {dimensions.width > 0 && dimensions.height > 0 && (
-        <Stage width={dimensions.width} height={dimensions.height}>
+        <Stage
+          ref={stageRef}
+          width={dimensions.width}
+          height={dimensions.height}
+          onMouseDown={handleDrawStart}
+          onMouseMove={handleDrawMove}
+          onMouseUp={handleDrawEnd}
+          onMouseLeave={handleDrawEnd}
+          onTouchStart={handleDrawStart}
+          onTouchMove={handleDrawMove}
+          onTouchEnd={handleDrawEnd}
+          style={{ touchAction: "none", cursor: toolMode === "draw" ? "crosshair" : "pointer" }}
+        >
           <Layer>
             <Rect
               x={0}
@@ -352,8 +483,27 @@ export function Whiteboard({ messages }: WhiteboardProps) {
                 strokeWidth={stroke.strokeWidth}
                 lineCap="round"
                 lineJoin="round"
+                onClick={() => handleDeleteStroke(stroke.id)}
+                onTap={() => handleDeleteStroke(stroke.id)}
+                opacity={
+                  toolMode === "delete" && stroke.owner === "user"
+                    ? 0.8
+                    : 1
+                }
               />
             ))}
+            {localStroke.length > 1 && (
+              <Line
+                points={localStroke.flatMap((point) => [
+                  point.x * dimensions.width,
+                  point.y * dimensions.height,
+                ])}
+                stroke="#111"
+                strokeWidth={2}
+                lineCap="round"
+                lineJoin="round"
+              />
+            )}
           </Layer>
           <Layer>
             {textItems.map((item) => (
