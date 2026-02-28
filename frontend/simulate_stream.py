@@ -30,14 +30,15 @@ async def main() -> None:
         words = TEXT.split()
         for i, word in enumerate(words):
             await client.post(URL, json={
+                "command_id": f"sim-{i}",
                 "session_id": SESSION,
-                "message_type": "text",
+                "operation": "draw_text",
                 "payload": {
                     "text": word,
                     "x": round(0.05 + (i % 10) * 0.09, 2),
                     "y": round(0.1 + (i // 10) * 0.08, 2),
                     "font_size": 18,
-                    "color": "#333",
+                    "style": {"stroke_color": "#333"},
                 },
             })
             sys.stdout.write(word + " ")

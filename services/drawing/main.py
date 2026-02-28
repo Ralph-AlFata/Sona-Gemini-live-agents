@@ -1,13 +1,4 @@
-"""Sona Drawing Command Service — FastAPI entry point.
-
-Endpoints:
-    GET  /health               → HealthResponse
-    WS   /ws/{session_id}      → Subscribe to DSL messages
-    POST /draw                 → DrawResponse (202 Accepted)
-    POST /draw/clear           → DrawResponse (202 Accepted)
-
-Port: 8002
-"""
+"""Sona Drawing Command Service — FastAPI entry point."""
 
 from __future__ import annotations
 
@@ -21,12 +12,11 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from dsl import translate
+from dsl import StoredElement, apply_command
 from models import (
     ClearPayload,
     ClearRequest,
-    DSLMessage,
-    DrawRequest,
+    DrawCommandRequest,
     DrawResponse,
     HealthResponse,
 )
@@ -40,8 +30,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ─── Connection Manager ──────────────────────────────────────────────────────
-
 class ConnectionManager:
     """Tracks WebSocket subscribers by session and broadcasts JSON DSL messages."""
 
@@ -51,72 +39,38 @@ class ConnectionManager:
     async def connect(self, session_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
         self._connections[session_id].add(websocket)
-        logger.info(
-            "WebSocket connected: session_id=%s subscribers=%d",
-            session_id,
-            len(self._connections[session_id]),
-        )
 
     def disconnect(self, session_id: str, websocket: WebSocket) -> None:
         subscribers = self._connections.get(session_id)
         if subscribers is None:
             return
-
         subscribers.discard(websocket)
         if not subscribers:
             self._connections.pop(session_id, None)
 
-        logger.info(
-            "WebSocket disconnected: session_id=%s subscribers=%d",
-            session_id,
-            len(self._connections.get(session_id, set())),
-        )
-
-    async def broadcast(self, session_id: str, message: DSLMessage) -> int:
-        """Send a DSL message to all subscribers for a session.
-
-        Returns the number of subscribers that received the message.
-        """
+    async def broadcast(self, session_id: str, message: dict[str, Any]) -> int:
         subscribers = self._connections.get(session_id)
         if not subscribers:
-            logger.info(
-                "No subscribers for session_id=%s; dropped message id=%s",
-                session_id,
-                message.id,
-            )
             return 0
 
         dead: list[WebSocket] = []
-        payload: dict[str, Any] = message.model_dump(mode="json")
-
         for socket in subscribers:
             try:
-                await socket.send_json(payload)
+                await socket.send_json(message)
             except Exception:
-                logger.warning(
-                    "Dead socket detected for session_id=%s; removing",
-                    session_id,
-                    exc_info=True,
-                )
                 dead.append(socket)
 
         for socket in dead:
             self.disconnect(session_id, socket)
 
-        delivered = len(subscribers) - len(dead)
-        logger.info(
-            "Broadcast complete: session_id=%s message_id=%s delivered=%d",
-            session_id,
-            message.id,
-            delivered,
-        )
-        return delivered
+        return len(subscribers) - len(dead)
 
 
 manager = ConnectionManager()
+# session_id -> element_id -> element\
+# TODO: In the future, we need to integrate database in the cloud. We need to handle the different sessions for the different users, and have the canvas there, etc...
+ELEMENT_STORE: dict[str, dict[str, StoredElement]] = {}
 
-
-# ─── Lifespan ─────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -125,12 +79,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Drawing service shutting down")
 
 
-# ─── App ──────────────────────────────────────────────────────────────────────
-
 app = FastAPI(
     title="Sona Drawing Command Service",
-    description="Translates draw requests into DSL and broadcasts over WebSocket",
-    version="0.1.0",
+    description="Applies draw commands and broadcasts reconciliation DSL messages",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -138,6 +90,7 @@ _allowed_origins: list[str] = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
+# TODO: Standardize everything that is coming from the .env. Create a config.py file for the drawing microservice, then load the settings from there
 _extra_origin = os.environ.get("FRONTEND_URL")
 if _extra_origin:
     _allowed_origins.append(_extra_origin)
@@ -150,8 +103,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ─── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
 async def health_check() -> HealthResponse:
@@ -174,19 +125,21 @@ async def websocket_session(session_id: str, websocket: WebSocket) -> None:
     status_code=status.HTTP_202_ACCEPTED,
     tags=["drawing"],
 )
-async def draw(body: DrawRequest) -> DrawResponse:
-    messages = translate(body)
+async def draw(body: DrawCommandRequest) -> DrawResponse:
+    messages, response = apply_command(body, ELEMENT_STORE)
 
+    delivered = 0
     for message in messages:
-        await manager.broadcast(body.session_id, message)
+        delivered += await manager.broadcast(body.session_id, message.model_dump(mode="json"))
 
     logger.info(
-        "Draw accepted: session_id=%s type=%s emitted=%d",
+        "Draw accepted: session_id=%s operation=%s emitted=%d delivered=%d",
         body.session_id,
-        body.message_type,
+        body.operation,
         len(messages),
+        delivered,
     )
-    return DrawResponse(session_id=body.session_id, emitted_count=len(messages))
+    return response
 
 
 @app.post(
@@ -196,15 +149,14 @@ async def draw(body: DrawRequest) -> DrawResponse:
     tags=["drawing"],
 )
 async def clear_canvas(body: ClearRequest) -> DrawResponse:
-    draw_request = DrawRequest(
+    draw_request = DrawCommandRequest(
         session_id=body.session_id,
-        message_type="clear",
+        operation="clear_canvas",
         payload=ClearPayload(),
     )
-    messages = translate(draw_request)
+    messages, response = apply_command(draw_request, ELEMENT_STORE)
 
     for message in messages:
-        await manager.broadcast(draw_request.session_id, message)
+        await manager.broadcast(draw_request.session_id, message.model_dump(mode="json"))
 
-    logger.info("Clear accepted: session_id=%s", draw_request.session_id)
-    return DrawResponse(session_id=draw_request.session_id, emitted_count=len(messages))
+    return response
