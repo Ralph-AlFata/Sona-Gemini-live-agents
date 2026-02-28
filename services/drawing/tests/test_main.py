@@ -39,6 +39,18 @@ def test_draw_all_supported_types_accept_202() -> None:
             },
             {
                 "session_id": "s1",
+                "message_type": "shape",
+                "payload": {
+                    "shape": "square",
+                    "x": 0.45,
+                    "y": 0.2,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "color": "#0a0",
+                },
+            },
+            {
+                "session_id": "s1",
                 "message_type": "text",
                 "payload": {
                     "text": "abc",

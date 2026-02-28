@@ -72,6 +72,26 @@ def test_translate_plain_shape_single_message() -> None:
     assert msgs[0].type == "shape"
 
 
+def test_translate_square_shape_single_message() -> None:
+    req = DrawRequest(
+        session_id="s3-square",
+        message_type="shape",
+        payload={
+            "shape": "square",
+            "x": 0.2,
+            "y": 0.3,
+            "width": 0.2,
+            "height": 0.2,
+            "color": "#00aa00",
+        },
+    )
+
+    msgs = translate(req)
+
+    assert len(msgs) == 1
+    assert msgs[0].type == "shape"
+
+
 def test_translate_text_highlight_and_clear() -> None:
     text_msgs = translate(
         DrawRequest(
