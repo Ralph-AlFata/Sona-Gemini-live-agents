@@ -110,7 +110,7 @@ Phase 5 (infra, parallel)          ─┘                                       
 - [ ] **4.13** Create `src/components/StatusIndicator.tsx` — visual states: idle / connecting / listening (green pulse) / thinking (yellow spin) / speaking (blue bars)
 - [ ] **4.14** Create `src/components/SessionControls.tsx` — Mute/Unmute, Clear Canvas (`POST /draw/clear`), End Session buttons
 - [ ] **4.15** Create `src/components/AudioManager.tsx` — orchestrator WS, `useAudio` hook, updates status on `turn_complete` / `interrupted` / audio bytes
-- [*] **4.16** Create `src/components/Whiteboard.tsx` — Fabric.js canvas, drawing service WS, silence-based snapshot trigger (1.5s inactivity → `exportAsJPEG` → send to orchestrator WS)
+- [*] **4.16** Create `src/components/Whiteboard.tsx` — Konva canvas with drawing service WS rendering, local user freehand drawing (no backend round-trip for user strokes), and delete mode that only removes user-owned strokes (agent/backend strokes are protected); silence-based snapshot trigger still pending
 - [*] **4.17** Create `src/App.tsx` — layout: top bar (logo + StatusIndicator + SessionControls) + main Whiteboard
 - [x] **4.18** Create `src/main.tsx` — React entry point
 - [x] **4.19** Create `Dockerfile` — multi-stage: `node:20-alpine` builder → `nginx:alpine`; port 3000
@@ -173,7 +173,7 @@ Phase 5 (infra, parallel)          ─┘                                       
 - `services/orchestrator/main.py` — ADK streaming loop, LiveRequestQueue, event routing
 - `services/orchestrator/agent/agent.py` — model name + tool registration
 - `services/drawing/main.py` — ConnectionManager broadcast logic
-- `frontend/src/components/Whiteboard.tsx` — Konva progressive stroke rendering and message processing queue
+- `frontend/src/components/Whiteboard.tsx` — Konva progressive stroke rendering, local draw/delete tool behavior with stroke ownership rules, and message processing queue
 - `frontend/src/services/drawingSocket.ts` — WebSocket lifecycle and reconnect behavior
 - `frontend/src/hooks/useAudio.ts` — PCM capture at 16kHz + playback at 24kHz
 
