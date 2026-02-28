@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ChatPanel } from "./components/ChatPanel";
 import { Whiteboard } from "./components/Whiteboard";
 import { MessageLog } from "./components/MessageLog";
 import {
@@ -44,7 +45,10 @@ export function App() {
       </header>
 
       <main className="app-canvas">
-        <Whiteboard messages={messages} />
+        <section className="canvas-shell">
+          <Whiteboard messages={messages} />
+        </section>
+        <ChatPanel sessionId={SESSION_ID} />
       </main>
 
       <MessageLog messages={messages} />

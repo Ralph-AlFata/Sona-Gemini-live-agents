@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/components/messagelog.tsx","./src/components/whiteboard.tsx","./src/services/drawingsocket.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/chatpanel.tsx","./src/components/messagelog.tsx","./src/components/whiteboard.tsx","./src/services/drawingsocket.ts","./src/services/orchestratorchat.ts"],"version":"5.9.3"}
