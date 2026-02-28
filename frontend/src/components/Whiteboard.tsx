@@ -10,6 +10,7 @@ interface PointNorm {
 
 interface TextItem {
   id: string;
+  elementId: string;
   text: string;
   x: number;
   y: number;
@@ -19,14 +20,17 @@ interface TextItem {
 
 interface StrokeItem {
   id: string;
+  elementId: string;
   points: PointNorm[];
   color: string;
   strokeWidth: number;
   owner: "user" | "agent";
+  elementType: "freehand" | "shape";
 }
 
 interface HighlightItem {
   id: string;
+  elementId: string;
   x: number;
   y: number;
   width: number;
@@ -233,10 +237,12 @@ export function Whiteboard({ messages }: WhiteboardProps) {
       ...prev,
       {
         id: `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        elementId: `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
         points,
         color: "#111",
         strokeWidth: 2,
         owner: "user",
+        elementType: "freehand",
       },
     ]);
   }
@@ -275,6 +281,156 @@ export function Whiteboard({ messages }: WhiteboardProps) {
     }
   }
 
+  function upsertText(elementId: string, payload: Record<string, unknown>): void {
+    const next: TextItem = {
+      id: `text-${elementId}`,
+      elementId,
+      text: asString(payload["text"], ""),
+      x: asNumber(payload["x"], 0),
+      y: asNumber(payload["y"], 0),
+      fontSize: asNumber(payload["font_size"], 18),
+      color: asString(payload["color"], "#000"),
+    };
+    setTextItems((prev) => {
+      const without = prev.filter((item) => item.elementId !== elementId);
+      return [...without, next];
+    });
+  }
+
+  function upsertHighlight(elementId: string, payload: Record<string, unknown>): void {
+    const next: HighlightItem = {
+      id: `highlight-${elementId}`,
+      elementId,
+      x: asNumber(payload["x"], 0),
+      y: asNumber(payload["y"], 0),
+      width: asNumber(payload["width"], 0),
+      height: asNumber(payload["height"], 0),
+      color: asString(payload["fill_color"], asString(payload["color"], "rgba(255,255,0,0.3)")),
+    };
+    setHighlights((prev) => {
+      const without = prev.filter((item) => item.elementId !== elementId);
+      return [...without, next];
+    });
+  }
+
+  async function upsertFreehand(
+    elementId: string,
+    payload: Record<string, unknown>,
+    animate: boolean,
+  ): Promise<void> {
+    const pointsRaw = payload["points"];
+    if (!Array.isArray(pointsRaw)) return;
+
+    const points = pointsRaw
+      .map((point) => toPointNorm(point))
+      .filter((point): point is PointNorm => point !== null);
+    if (points.length < 2) return;
+
+    const color = asString(payload["color"], "#111");
+    const strokeWidth = asNumber(payload["stroke_width"], 2);
+    const strokeId = `freehand-${elementId}`;
+
+    if (!animate) {
+      setStrokes((prev) => {
+        const without = prev.filter((stroke) => stroke.elementId !== elementId);
+        return [
+          ...without,
+          {
+            id: strokeId,
+            elementId,
+            points,
+            color,
+            strokeWidth,
+            owner: "agent",
+            elementType: "freehand",
+          },
+        ];
+      });
+      return;
+    }
+
+    await sleep(asNumber(payload["delay_ms"], 0));
+    const firstPoint = points[0];
+    if (!firstPoint) return;
+
+    setStrokes((prev) => {
+      const without = prev.filter((stroke) => stroke.elementId !== elementId);
+      return [
+        ...without,
+        {
+          id: strokeId,
+          elementId,
+          points: [firstPoint],
+          color,
+          strokeWidth,
+          owner: "agent",
+          elementType: "freehand",
+        },
+      ];
+    });
+
+    const stepDelay = Math.max(
+      6,
+      Math.min(FREEHAND_STEP_DELAY_MS, Math.round(asNumber(payload["delay_ms"], 35) / 2)),
+    );
+    await animateStroke(strokeId, points, stepDelay);
+  }
+
+  async function upsertShape(
+    elementId: string,
+    payload: Record<string, unknown>,
+    animate: boolean,
+  ): Promise<void> {
+    const points = shapeToPoints(payload, dimensions.width, dimensions.height)
+      .map((point) => toPointNorm(point))
+      .filter((point): point is PointNorm => point !== null);
+    if (points.length < 2) return;
+
+    const color = asString(payload["color"], "#111");
+    const strokeWidth = asNumber(payload["stroke_width"], 2);
+    const strokeId = `shape-${elementId}`;
+
+    if (!animate) {
+      setStrokes((prev) => {
+        const without = prev.filter((stroke) => stroke.elementId !== elementId);
+        return [
+          ...without,
+          {
+            id: strokeId,
+            elementId,
+            points,
+            color,
+            strokeWidth,
+            owner: "agent",
+            elementType: "shape",
+          },
+        ];
+      });
+      return;
+    }
+
+    const firstPoint = points[0];
+    if (!firstPoint) return;
+
+    setStrokes((prev) => {
+      const without = prev.filter((stroke) => stroke.elementId !== elementId);
+      return [
+        ...without,
+        {
+          id: strokeId,
+          elementId,
+          points: [firstPoint],
+          color,
+          strokeWidth,
+          owner: "agent",
+          elementType: "shape",
+        },
+      ];
+    });
+
+    await animateStroke(strokeId, points, SHAPE_STEP_DELAY_MS);
+  }
+
   useEffect(() => {
     function updateSize() {
       if (containerRef.current) {
@@ -305,6 +461,7 @@ export function Whiteboard({ messages }: WhiteboardProps) {
     async function processQueue() {
       if (processingRef.current) return;
       processingRef.current = true;
+
       while (!unmountedRef.current && queueRef.current.length > 0) {
         const message = queueRef.current.shift();
         if (!message) continue;
@@ -319,96 +476,128 @@ export function Whiteboard({ messages }: WhiteboardProps) {
           continue;
         }
 
-        if (message.type === "text") {
-          setTextItems((prev) => [
-            ...prev,
-            {
-              id: message.id,
-              text: asString(payload["text"], ""),
-              x: asNumber(payload["x"], 0),
-              y: asNumber(payload["y"], 0),
-              fontSize: asNumber(payload["font_size"], 18),
-              color: asString(payload["color"], "#000"),
-            },
-          ]);
+        if (message.type === "element_created") {
+          const elementId = asString(payload["element_id"], "");
+          const elementType = asString(payload["element_type"], "");
+          const elementPayload = payload["payload"];
+          if (!elementId || !elementPayload || typeof elementPayload !== "object") continue;
+
+          const typedPayload = elementPayload as Record<string, unknown>;
+          if (elementType === "text") {
+            upsertText(elementId, typedPayload);
+          } else if (elementType === "highlight") {
+            upsertHighlight(elementId, typedPayload);
+          } else if (elementType === "freehand") {
+            await upsertFreehand(elementId, typedPayload, true);
+          } else if (elementType === "shape") {
+            await upsertShape(elementId, typedPayload, true);
+          }
           continue;
         }
 
-        if (message.type === "highlight") {
-          setHighlights((prev) => [
-            ...prev,
-            {
-              id: message.id,
-              x: asNumber(payload["x"], 0),
-              y: asNumber(payload["y"], 0),
-              width: asNumber(payload["width"], 0),
-              height: asNumber(payload["height"], 0),
-              color: asString(payload["color"], "rgba(255,255,0,0.3)"),
-            },
-          ]);
+        if (message.type === "elements_deleted") {
+          const elementIds = Array.isArray(payload["element_ids"])
+            ? payload["element_ids"].map((v) => String(v))
+            : [];
+          const idSet = new Set(elementIds);
+          setStrokes((prev) => prev.filter((stroke) => !idSet.has(stroke.elementId)));
+          setTextItems((prev) => prev.filter((item) => !idSet.has(item.elementId)));
+          setHighlights((prev) => prev.filter((item) => !idSet.has(item.elementId)));
           continue;
         }
 
-        if (message.type === "freehand") {
-          const pointsRaw = payload["points"];
-          if (!Array.isArray(pointsRaw)) continue;
-          const points = pointsRaw
-            .map((point) => toPointNorm(point))
-            .filter((point): point is PointNorm => point !== null);
-          if (points.length < 2) continue;
+        if (message.type === "elements_transformed") {
+          const elements = Array.isArray(payload["elements"]) ? payload["elements"] : [];
+          for (const item of elements) {
+            if (!item || typeof item !== "object") continue;
+            const elementId = asString((item as Record<string, unknown>)["element_id"], "");
+            const elementType = asString((item as Record<string, unknown>)["element_type"], "");
+            const elementPayload = (item as Record<string, unknown>)["payload"];
+            if (!elementId || !elementPayload || typeof elementPayload !== "object") continue;
+            const typedPayload = elementPayload as Record<string, unknown>;
 
-          await sleep(asNumber(payload["delay_ms"], 0));
-          if (unmountedRef.current) break;
-          const firstPoint = points[0];
-          if (!firstPoint) continue;
-
-          const strokeId = `freehand-${message.id}`;
-          setStrokes((prev) => [
-            ...prev,
-            {
-              id: strokeId,
-              points: [firstPoint],
-              color: asString(payload["color"], "#111"),
-              strokeWidth: asNumber(payload["stroke_width"], 2),
-              owner: "agent",
-            },
-          ]);
-          const stepDelay = Math.max(
-            6,
-            Math.min(FREEHAND_STEP_DELAY_MS, Math.round(asNumber(payload["delay_ms"], 35) / 2)),
-          );
-          await animateStroke(strokeId, points, stepDelay);
+            if (elementType === "text") {
+              const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
+              upsertText(elementId, {
+                ...typedPayload,
+                color: asString(stylePayload?.stroke_color, "#000"),
+              });
+            } else if (elementType === "highlight") {
+              const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
+              upsertHighlight(elementId, {
+                ...typedPayload,
+                color: asString(stylePayload?.fill_color, "rgba(255,255,0,0.3)"),
+              });
+            } else if (elementType === "freehand") {
+              const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
+              await upsertFreehand(
+                elementId,
+                {
+                  ...typedPayload,
+                  color: asString(stylePayload?.stroke_color, "#111"),
+                  stroke_width: asNumber(stylePayload?.stroke_width, 2),
+                  delay_ms: asNumber(stylePayload?.delay_ms, 0),
+                },
+                false,
+              );
+            } else if (elementType === "shape") {
+              const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
+              await upsertShape(
+                elementId,
+                {
+                  ...typedPayload,
+                  color: asString(stylePayload?.stroke_color, "#111"),
+                  stroke_width: asNumber(stylePayload?.stroke_width, 2),
+                },
+                false,
+              );
+            }
+          }
           continue;
         }
 
-        if (message.type === "shape") {
-          const points = shapeToPoints(payload, dimensions.width, dimensions.height)
-            .map((point) => toPointNorm(point))
-            .filter((point): point is PointNorm => point !== null);
-          if (points.length < 2) continue;
-          const firstPoint = points[0];
-          if (!firstPoint) continue;
-
-          const shapeStrokeId = `shape-${message.id}`;
-          setStrokes((prev) => [
-            ...prev,
-            {
-              id: shapeStrokeId,
-              points: [firstPoint],
-              color: asString(payload["color"], "#111"),
-              strokeWidth: 2,
-              owner: "agent",
-            },
-          ]);
-
-          await animateStroke(shapeStrokeId, points, SHAPE_STEP_DELAY_MS);
+        if (message.type === "elements_restyled") {
+          const elements = Array.isArray(payload["elements"]) ? payload["elements"] : [];
+          for (const item of elements) {
+            if (!item || typeof item !== "object") continue;
+            const elementId = asString((item as Record<string, unknown>)["element_id"], "");
+            const style = (item as Record<string, unknown>)["style"];
+            if (!elementId || !style || typeof style !== "object") continue;
+            const styleObj = style as Record<string, unknown>;
+            setStrokes((prev) =>
+              prev.map((stroke) =>
+                stroke.elementId === elementId
+                  ? {
+                    ...stroke,
+                    color: asString(styleObj["color"], stroke.color),
+                    strokeWidth: asNumber(styleObj["stroke_width"], stroke.strokeWidth),
+                  }
+                  : stroke,
+              ),
+            );
+            setTextItems((prev) =>
+              prev.map((text) =>
+                text.elementId === elementId
+                  ? { ...text, color: asString(styleObj["color"], text.color) }
+                  : text,
+              ),
+            );
+            setHighlights((prev) =>
+              prev.map((highlight) =>
+                highlight.elementId === elementId
+                  ? { ...highlight, color: asString(styleObj["fill_color"], highlight.color) }
+                  : highlight,
+              ),
+            );
+          }
         }
       }
+
       processingRef.current = false;
     }
 
     void processQueue();
-  }, [messages]);
+  }, [dimensions.height, dimensions.width, messages]);
 
   return (
     <div

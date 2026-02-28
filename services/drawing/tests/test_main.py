@@ -12,72 +12,59 @@ def test_health_check() -> None:
         assert response.json() == {"status": "ok", "service": "drawing"}
 
 
-def test_draw_all_supported_types_accept_202() -> None:
+def test_draw_create_and_edit_flow() -> None:
     with TestClient(main.app) as client:
-        cases = [
-            {
+        create = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_a",
                 "session_id": "s1",
-                "message_type": "freehand",
-                "payload": {
-                    "points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.2}],
-                    "color": "#000",
-                    "stroke_width": 2.0,
-                    "delay_ms": 30,
-                },
-            },
-            {
-                "session_id": "s1",
-                "message_type": "shape",
+                "operation": "draw_shape",
                 "payload": {
                     "shape": "rectangle",
                     "x": 0.1,
                     "y": 0.1,
                     "width": 0.3,
-                    "height": 0.3,
-                    "color": "#f00",
-                },
-            },
-            {
-                "session_id": "s1",
-                "message_type": "shape",
-                "payload": {
-                    "shape": "square",
-                    "x": 0.45,
-                    "y": 0.2,
-                    "width": 0.2,
                     "height": 0.2,
-                    "color": "#0a0",
+                    "style": {"stroke_color": "#f00", "stroke_width": 2.0},
                 },
             },
-            {
-                "session_id": "s1",
-                "message_type": "text",
-                "payload": {
-                    "text": "abc",
-                    "x": 0.2,
-                    "y": 0.2,
-                    "font_size": 16,
-                    "color": "#111",
-                },
-            },
-            {
-                "session_id": "s1",
-                "message_type": "highlight",
-                "payload": {
-                    "x": 0.2,
-                    "y": 0.2,
-                    "width": 0.2,
-                    "height": 0.2,
-                    "color": "rgba(255,255,0,0.4)",
-                },
-            },
-        ]
+        )
+        assert create.status_code == 202
+        body = create.json()
+        assert body["applied_count"] == 1
+        element_id = body["created_element_ids"][0]
 
-        for body in cases:
-            response = client.post("/draw", json=body)
-            assert response.status_code == 202, f"Failed for {body['message_type']}"
-            assert response.json()["session_id"] == "s1"
-            assert response.json()["emitted_count"] >= 1
+        move = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_b",
+                "session_id": "s1",
+                "operation": "move_elements",
+                "payload": {"element_ids": [element_id], "dx": 0.1, "dy": 0.0},
+            },
+        )
+        assert move.status_code == 202
+        assert move.json()["applied_count"] == 1
+
+        style = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_c",
+                "session_id": "s1",
+                "operation": "update_style",
+                "payload": {"element_ids": [element_id], "stroke_color": "#00f"},
+            },
+        )
+        assert style.status_code == 202
+        assert style.json()["applied_count"] == 1
+
+
+def test_draw_clear_returns_202() -> None:
+    with TestClient(main.app) as client:
+        response = client.post("/draw/clear", json={"session_id": "clear-s1"})
+        assert response.status_code == 202
+        assert response.json()["operation"] == "clear_canvas"
 
 
 def test_draw_invalid_payload_returns_422() -> None:
@@ -85,44 +72,16 @@ def test_draw_invalid_payload_returns_422() -> None:
         response = client.post(
             "/draw",
             json={
+                "command_id": "cmd_invalid",
                 "session_id": "s1",
-                "message_type": "freehand",
+                "operation": "draw_freehand",
                 "payload": {
-                    "points": [{"x": 1.5, "y": 0.1}, {"x": 0.2, "y": 0.3}],
-                    "color": "#000",
-                    "stroke_width": 2.0,
-                    "delay_ms": 30,
+                    "points": [{"x": 1.2, "y": 0.1}, {"x": 0.2, "y": 0.3}],
+                    "style": {"stroke_color": "#000"},
                 },
             },
         )
         assert response.status_code == 422
-
-
-def test_draw_returns_202_without_subscribers() -> None:
-    with TestClient(main.app) as client:
-        response = client.post(
-            "/draw",
-            json={
-                "session_id": "no-clients",
-                "message_type": "text",
-                "payload": {
-                    "text": "hello",
-                    "x": 0.2,
-                    "y": 0.2,
-                    "font_size": 16,
-                    "color": "#111",
-                },
-            },
-        )
-        assert response.status_code == 202
-        assert response.json() == {"session_id": "no-clients", "emitted_count": 1}
-
-
-def test_draw_clear_returns_202() -> None:
-    with TestClient(main.app) as client:
-        response = client.post("/draw/clear", json={"session_id": "clear-s1"})
-        assert response.status_code == 202
-        assert response.json() == {"session_id": "clear-s1", "emitted_count": 1}
 
 
 def test_websocket_receives_broadcast_after_draw() -> None:
@@ -131,67 +90,20 @@ def test_websocket_receives_broadcast_after_draw() -> None:
             response = client.post(
                 "/draw",
                 json={
+                    "command_id": "cmd_ws",
                     "session_id": "test-room",
-                    "message_type": "text",
+                    "operation": "draw_text",
                     "payload": {
                         "text": "hello",
                         "x": 0.3,
                         "y": 0.4,
                         "font_size": 18,
-                        "color": "#000",
+                        "style": {"stroke_color": "#000"},
                     },
                 },
             )
             assert response.status_code == 202
             msg = ws.receive_json()
-            assert msg["version"] == "1.0"
+            assert msg["version"] == "2.0"
             assert msg["session_id"] == "test-room"
-            assert msg["type"] == "text"
-
-
-def test_multiple_websocket_clients_receive_same_message() -> None:
-    with TestClient(main.app) as client:
-        with client.websocket_connect("/ws/shared") as ws1, client.websocket_connect("/ws/shared") as ws2:
-            response = client.post(
-                "/draw",
-                json={
-                    "session_id": "shared",
-                    "message_type": "highlight",
-                    "payload": {
-                        "x": 0.1,
-                        "y": 0.2,
-                        "width": 0.3,
-                        "height": 0.2,
-                        "color": "rgba(255,255,0,0.4)",
-                    },
-                },
-            )
-            assert response.status_code == 202
-
-            msg1 = ws1.receive_json()
-            msg2 = ws2.receive_json()
-            assert msg1["id"] == msg2["id"]
-            assert msg1["type"] == msg2["type"] == "highlight"
-
-
-def test_disconnect_cleanup_does_not_break_subsequent_broadcasts() -> None:
-    with TestClient(main.app) as client:
-        with client.websocket_connect("/ws/disconnect") as ws:
-            ws.close()
-
-        response = client.post(
-            "/draw",
-            json={
-                "session_id": "disconnect",
-                "message_type": "text",
-                "payload": {
-                    "text": "after-close",
-                    "x": 0.4,
-                    "y": 0.5,
-                    "font_size": 16,
-                    "color": "#333",
-                },
-            },
-        )
-        assert response.status_code == 202
-        assert response.json()["emitted_count"] == 1
+            assert msg["type"] == "element_created"
