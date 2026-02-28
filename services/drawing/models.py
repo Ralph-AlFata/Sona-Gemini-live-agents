@@ -42,7 +42,7 @@ class FreehandPayload(_StrictBase):
 class ShapePayload(_StrictBase):
     """A geometric shape with position, size, and optional template variant."""
 
-    shape: Literal["rectangle", "ellipse", "line", "triangle", "polygon"]
+    shape: Literal["rectangle", "ellipse", "line", "triangle", "polygon", "square"]
     x: float = Field(ge=0.0, le=1.0)
     y: float = Field(ge=0.0, le=1.0)
     width: float = Field(gt=0.0, le=1.0)

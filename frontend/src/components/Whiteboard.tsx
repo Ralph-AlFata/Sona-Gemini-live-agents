@@ -37,7 +37,7 @@ interface WhiteboardProps {
 }
 
 const HANDWRITING_FONT = '"Patrick Hand", "Comic Sans MS", cursive';
-const SHAPE_STEP_DELAY_MS = 14;
+const SHAPE_STEP_DELAY_MS = 20;
 const FREEHAND_STEP_DELAY_MS = 12;
 const ELLIPSE_SEGMENTS = 48;
 const POLYGON_SIDES = 5;
@@ -84,7 +84,11 @@ function toPointNorm(value: unknown): PointNorm | null {
   };
 }
 
-function shapeToPoints(payload: Record<string, unknown>): PointNorm[] {
+function shapeToPoints(
+  payload: Record<string, unknown>,
+  canvasWidth: number,
+  canvasHeight: number,
+): PointNorm[] {
   const shape = asString(payload["shape"], "line");
   const x = asNumber(payload["x"], 0);
   const y = asNumber(payload["y"], 0);
@@ -101,6 +105,24 @@ function shapeToPoints(payload: Record<string, unknown>): PointNorm[] {
       { x: x + width, y },
       { x: x + width, y: y + height },
       { x, y: y + height },
+      { x, y },
+    ];
+  }
+
+  if (shape === "square") {
+    const minCanvasSize = Math.min(canvasWidth, canvasHeight);
+    const requestedSidePx = Math.max(0, width) * minCanvasSize;
+    const maxSidePxX = Math.max(0, (1 - x) * canvasWidth);
+    const maxSidePxY = Math.max(0, (1 - y) * canvasHeight);
+    const sidePx = Math.min(requestedSidePx, maxSidePxX, maxSidePxY);
+    const sideNormX = canvasWidth > 0 ? sidePx / canvasWidth : 0;
+    const sideNormY = canvasHeight > 0 ? sidePx / canvasHeight : 0;
+
+    return [
+      { x, y },
+      { x: x + sideNormX, y },
+      { x: x + sideNormX, y: y + sideNormY },
+      { x, y: y + sideNormY },
       { x, y },
     ];
   }
@@ -285,7 +307,7 @@ export function Whiteboard({ messages }: WhiteboardProps) {
         }
 
         if (message.type === "shape") {
-          const points = shapeToPoints(payload)
+          const points = shapeToPoints(payload, dimensions.width, dimensions.height)
             .map((point) => toPointNorm(point))
             .filter((point): point is PointNorm => point !== null);
           if (points.length < 2) continue;
