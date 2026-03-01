@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Stage, Layer, Rect, Text, Line } from "react-konva";
 import type { Stage as KonvaStage } from "konva/lib/Stage";
 import type { DSLMessageRaw } from "../services/drawingSocket";
+import { postDraw } from "../services/drawingService";
 
 interface PointNorm {
   x: number;
@@ -40,13 +41,12 @@ interface HighlightItem {
 
 interface WhiteboardProps {
   messages: DSLMessageRaw[];
+  sessionId: string;
 }
 
 const HANDWRITING_FONT = '"Patrick Hand", "Comic Sans MS", cursive';
 const SHAPE_STEP_DELAY_MS = 20;
 const FREEHAND_STEP_DELAY_MS = 12;
-const ELLIPSE_SEGMENTS = 48;
-const POLYGON_SIDES = 5;
 const SEGMENT_SAMPLES_PER_UNIT = 90;
 
 function asNumber(value: unknown, fallback: number): number {
@@ -90,88 +90,7 @@ function toPointNorm(value: unknown): PointNorm | null {
   };
 }
 
-function shapeToPoints(
-  payload: Record<string, unknown>,
-  canvasWidth: number,
-  canvasHeight: number,
-): PointNorm[] {
-  const shape = asString(payload["shape"], "line");
-  const x = asNumber(payload["x"], 0);
-  const y = asNumber(payload["y"], 0);
-  const width = asNumber(payload["width"], 0.2);
-  const height = asNumber(payload["height"], 0.2);
-
-  if (shape === "line") {
-    return [{ x, y }, { x: x + width, y: y + height }];
-  }
-
-  if (shape === "rectangle") {
-    return [
-      { x, y },
-      { x: x + width, y },
-      { x: x + width, y: y + height },
-      { x, y: y + height },
-      { x, y },
-    ];
-  }
-
-  if (shape === "square") {
-    const minCanvasSize = Math.min(canvasWidth, canvasHeight);
-    const requestedSidePx = Math.max(0, width) * minCanvasSize;
-    const maxSidePxX = Math.max(0, (1 - x) * canvasWidth);
-    const maxSidePxY = Math.max(0, (1 - y) * canvasHeight);
-    const sidePx = Math.min(requestedSidePx, maxSidePxX, maxSidePxY);
-    const sideNormX = canvasWidth > 0 ? sidePx / canvasWidth : 0;
-    const sideNormY = canvasHeight > 0 ? sidePx / canvasHeight : 0;
-
-    return [
-      { x, y },
-      { x: x + sideNormX, y },
-      { x: x + sideNormX, y: y + sideNormY },
-      { x, y: y + sideNormY },
-      { x, y },
-    ];
-  }
-
-  if (shape === "triangle") {
-    return [
-      { x, y: y + height },
-      { x: x + width / 2, y },
-      { x: x + width, y: y + height },
-      { x, y: y + height },
-    ];
-  }
-
-  if (shape === "ellipse") {
-    const cx = x + width / 2;
-    const cy = y + height / 2;
-    const rx = width / 2;
-    const ry = height / 2;
-    const points: PointNorm[] = [];
-    for (let i = 0; i <= ELLIPSE_SEGMENTS; i++) {
-      const t = (Math.PI * 2 * i) / ELLIPSE_SEGMENTS;
-      points.push({ x: cx + rx * Math.cos(t), y: cy + ry * Math.sin(t) });
-    }
-    return points;
-  }
-
-  if (shape === "polygon") {
-    const cx = x + width / 2;
-    const cy = y + height / 2;
-    const rx = width / 2;
-    const ry = height / 2;
-    const points: PointNorm[] = [];
-    for (let i = 0; i <= POLYGON_SIDES; i++) {
-      const t = (Math.PI * 2 * i) / POLYGON_SIDES - Math.PI / 2;
-      points.push({ x: cx + rx * Math.cos(t), y: cy + ry * Math.sin(t) });
-    }
-    return points;
-  }
-
-  return [];
-}
-
-export function Whiteboard({ messages }: WhiteboardProps) {
+export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<KonvaStage | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
@@ -179,13 +98,17 @@ export function Whiteboard({ messages }: WhiteboardProps) {
   const [strokes, setStrokes] = useState<StrokeItem[]>([]);
   const [highlights, setHighlights] = useState<HighlightItem[]>([]);
   const [localStroke, setLocalStroke] = useState<PointNorm[]>([]);
-  const [toolMode, setToolMode] = useState<"draw" | "delete">("draw");
+  const [toolMode, setToolMode] = useState<"draw" | "delete" | "select">("draw");
+  const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
   const queueRef = useRef<DSLMessageRaw[]>([]);
   const processedCountRef = useRef(0);
   const processingRef = useRef(false);
   const unmountedRef = useRef(false);
   const isDrawingRef = useRef(false);
   const localPointsRef = useRef<PointNorm[]>([]);
+  // Select/drag state
+  const dragStartRef = useRef<PointNorm | null>(null);
+  const isDraggingRef = useRef(false);
 
   function getNormalizedPointer(): PointNorm | null {
     const stage = stageRef.current;
@@ -206,45 +129,68 @@ export function Whiteboard({ messages }: WhiteboardProps) {
     return Math.sqrt(dx * dx + dy * dy) >= 0.0015;
   }
 
-  function handleDrawStart(): void {
-    if (toolMode !== "draw") return;
+  function handleMouseDown(): void {
     const point = getNormalizedPointer();
     if (!point) return;
-    isDrawingRef.current = true;
-    localPointsRef.current = [point];
-    setLocalStroke([point]);
+
+    if (toolMode === "draw") {
+      isDrawingRef.current = true;
+      localPointsRef.current = [point];
+      setLocalStroke([point]);
+    } else if (toolMode === "select" && selectedElementId) {
+      // Begin drag
+      dragStartRef.current = point;
+      isDraggingRef.current = true;
+    }
   }
 
-  function handleDrawMove(): void {
-    if (toolMode !== "draw") return;
-    if (!isDrawingRef.current) return;
-    const point = getNormalizedPointer();
-    if (!point || !isFarEnough(point)) return;
-    const next = [...localPointsRef.current, point];
-    localPointsRef.current = next;
-    setLocalStroke(next);
+  function handleMouseMove(): void {
+    if (toolMode === "draw" && isDrawingRef.current) {
+      const point = getNormalizedPointer();
+      if (!point || !isFarEnough(point)) return;
+      const next = [...localPointsRef.current, point];
+      localPointsRef.current = next;
+      setLocalStroke(next);
+    }
   }
 
-  function handleDrawEnd(): void {
-    if (toolMode !== "draw") return;
-    if (!isDrawingRef.current) return;
-    isDrawingRef.current = false;
-    const points = localPointsRef.current;
-    localPointsRef.current = [];
-    setLocalStroke([]);
-    if (points.length < 2) return;
-    setStrokes((prev) => [
-      ...prev,
-      {
-        id: `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-        elementId: `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-        points,
-        color: "#111",
-        strokeWidth: 2,
-        owner: "user",
-        elementType: "freehand",
-      },
-    ]);
+  function handleMouseUp(): void {
+    if (toolMode === "draw") {
+      if (!isDrawingRef.current) return;
+      isDrawingRef.current = false;
+      const points = localPointsRef.current;
+      localPointsRef.current = [];
+      setLocalStroke([]);
+      if (points.length < 2) return;
+      setStrokes((prev) => [
+        ...prev,
+        {
+          id: `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+          elementId: `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+          points,
+          color: "#111",
+          strokeWidth: 2,
+          owner: "user",
+          elementType: "freehand",
+        },
+      ]);
+    } else if (toolMode === "select" && isDraggingRef.current && selectedElementId) {
+      const end = getNormalizedPointer();
+      const start = dragStartRef.current;
+      if (end && start) {
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        if (Math.abs(dx) > 0.002 || Math.abs(dy) > 0.002) {
+          void postDraw(sessionId, "move_elements", {
+            element_ids: [selectedElementId],
+            dx,
+            dy,
+          });
+        }
+      }
+      isDraggingRef.current = false;
+      dragStartRef.current = null;
+    }
   }
 
   function handleDeleteStroke(strokeId: string): void {
@@ -252,6 +198,11 @@ export function Whiteboard({ messages }: WhiteboardProps) {
     setStrokes((prev) =>
       prev.filter((stroke) => !(stroke.id === strokeId && stroke.owner === "user")),
     );
+  }
+
+  function handleSelectStroke(elementId: string): void {
+    if (toolMode !== "select") return;
+    setSelectedElementId((prev) => (prev === elementId ? null : elementId));
   }
 
   async function animateStroke(
@@ -313,9 +264,15 @@ export function Whiteboard({ messages }: WhiteboardProps) {
     });
   }
 
-  async function upsertFreehand(
+  /**
+   * Upsert a stroke element (shape or freehand) from a points-based payload.
+   * Both shapes and freehand strokes now carry an explicit `points` array,
+   * so the rendering path is unified — no conversion needed.
+   */
+  async function upsertStroke(
     elementId: string,
     payload: Record<string, unknown>,
+    elementType: "freehand" | "shape",
     animate: boolean,
   ): Promise<void> {
     const pointsRaw = payload["points"];
@@ -328,107 +285,40 @@ export function Whiteboard({ messages }: WhiteboardProps) {
 
     const color = asString(payload["color"], "#111");
     const strokeWidth = asNumber(payload["stroke_width"], 2);
-    const strokeId = `freehand-${elementId}`;
+    const strokeId = `${elementType}-${elementId}`;
 
     if (!animate) {
       setStrokes((prev) => {
         const without = prev.filter((stroke) => stroke.elementId !== elementId);
         return [
           ...without,
-          {
-            id: strokeId,
-            elementId,
-            points,
-            color,
-            strokeWidth,
-            owner: "agent",
-            elementType: "freehand",
-          },
+          { id: strokeId, elementId, points, color, strokeWidth, owner: "agent", elementType },
         ];
       });
       return;
     }
 
-    await sleep(asNumber(payload["delay_ms"], 0));
     const firstPoint = points[0];
     if (!firstPoint) return;
+
+    if (elementType === "freehand") {
+      await sleep(asNumber(payload["delay_ms"], 0));
+    }
 
     setStrokes((prev) => {
       const without = prev.filter((stroke) => stroke.elementId !== elementId);
       return [
         ...without,
-        {
-          id: strokeId,
-          elementId,
-          points: [firstPoint],
-          color,
-          strokeWidth,
-          owner: "agent",
-          elementType: "freehand",
-        },
+        { id: strokeId, elementId, points: [firstPoint], color, strokeWidth, owner: "agent", elementType },
       ];
     });
 
-    const stepDelay = Math.max(
-      6,
-      Math.min(FREEHAND_STEP_DELAY_MS, Math.round(asNumber(payload["delay_ms"], 35) / 2)),
-    );
+    const stepDelay =
+      elementType === "freehand"
+        ? Math.max(6, Math.min(FREEHAND_STEP_DELAY_MS, Math.round(asNumber(payload["delay_ms"], 35) / 2)))
+        : SHAPE_STEP_DELAY_MS;
+
     await animateStroke(strokeId, points, stepDelay);
-  }
-
-  async function upsertShape(
-    elementId: string,
-    payload: Record<string, unknown>,
-    animate: boolean,
-  ): Promise<void> {
-    const points = shapeToPoints(payload, dimensions.width, dimensions.height)
-      .map((point) => toPointNorm(point))
-      .filter((point): point is PointNorm => point !== null);
-    if (points.length < 2) return;
-
-    const color = asString(payload["color"], "#111");
-    const strokeWidth = asNumber(payload["stroke_width"], 2);
-    const strokeId = `shape-${elementId}`;
-
-    if (!animate) {
-      setStrokes((prev) => {
-        const without = prev.filter((stroke) => stroke.elementId !== elementId);
-        return [
-          ...without,
-          {
-            id: strokeId,
-            elementId,
-            points,
-            color,
-            strokeWidth,
-            owner: "agent",
-            elementType: "shape",
-          },
-        ];
-      });
-      return;
-    }
-
-    const firstPoint = points[0];
-    if (!firstPoint) return;
-
-    setStrokes((prev) => {
-      const without = prev.filter((stroke) => stroke.elementId !== elementId);
-      return [
-        ...without,
-        {
-          id: strokeId,
-          elementId,
-          points: [firstPoint],
-          color,
-          strokeWidth,
-          owner: "agent",
-          elementType: "shape",
-        },
-      ];
-    });
-
-    await animateStroke(strokeId, points, SHAPE_STEP_DELAY_MS);
   }
 
   useEffect(() => {
@@ -472,6 +362,7 @@ export function Whiteboard({ messages }: WhiteboardProps) {
           setStrokes([]);
           setHighlights([]);
           setLocalStroke([]);
+          setSelectedElementId(null);
           localPointsRef.current = [];
           continue;
         }
@@ -488,9 +379,9 @@ export function Whiteboard({ messages }: WhiteboardProps) {
           } else if (elementType === "highlight") {
             upsertHighlight(elementId, typedPayload);
           } else if (elementType === "freehand") {
-            await upsertFreehand(elementId, typedPayload, true);
+            await upsertStroke(elementId, typedPayload, "freehand", true);
           } else if (elementType === "shape") {
-            await upsertShape(elementId, typedPayload, true);
+            await upsertStroke(elementId, typedPayload, "shape", true);
           }
           continue;
         }
@@ -503,6 +394,8 @@ export function Whiteboard({ messages }: WhiteboardProps) {
           setStrokes((prev) => prev.filter((stroke) => !idSet.has(stroke.elementId)));
           setTextItems((prev) => prev.filter((item) => !idSet.has(item.elementId)));
           setHighlights((prev) => prev.filter((item) => !idSet.has(item.elementId)));
+          // Deselect if the selected element was deleted
+          setSelectedElementId((prev) => (prev && idSet.has(prev) ? null : prev));
           continue;
         }
 
@@ -528,27 +421,17 @@ export function Whiteboard({ messages }: WhiteboardProps) {
                 ...typedPayload,
                 color: asString(stylePayload?.fill_color, "rgba(255,255,0,0.3)"),
               });
-            } else if (elementType === "freehand") {
+            } else if (elementType === "freehand" || elementType === "shape") {
               const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
-              await upsertFreehand(
+              await upsertStroke(
                 elementId,
                 {
                   ...typedPayload,
                   color: asString(stylePayload?.stroke_color, "#111"),
                   stroke_width: asNumber(stylePayload?.stroke_width, 2),
-                  delay_ms: asNumber(stylePayload?.delay_ms, 0),
+                  delay_ms: 0,
                 },
-                false,
-              );
-            } else if (elementType === "shape") {
-              const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
-              await upsertShape(
-                elementId,
-                {
-                  ...typedPayload,
-                  color: asString(stylePayload?.stroke_color, "#111"),
-                  stroke_width: asNumber(stylePayload?.stroke_width, 2),
-                },
+                elementType as "freehand" | "shape",
                 false,
               );
             }
@@ -597,13 +480,17 @@ export function Whiteboard({ messages }: WhiteboardProps) {
     }
 
     void processQueue();
-  }, [dimensions.height, dimensions.width, messages]);
+  }, [messages]);
+
+  const cursor =
+    toolMode === "draw" ? "crosshair" : toolMode === "select" ? "default" : "pointer";
 
   return (
     <div
       ref={containerRef}
       style={{ width: "100%", height: "100%", background: "#f5f5f5", position: "relative" }}
     >
+      {/* Toolbar */}
       <div
         style={{
           position: "absolute",
@@ -618,58 +505,49 @@ export function Whiteboard({ messages }: WhiteboardProps) {
           border: "1px solid #ddd",
         }}
       >
-        <button
-          onClick={() => setToolMode("draw")}
-          style={{
-            padding: "6px 10px",
-            borderRadius: 6,
-            border: "1px solid #ccc",
-            background: toolMode === "draw" ? "#111" : "#fff",
-            color: toolMode === "draw" ? "#fff" : "#111",
-            fontSize: 12,
-            cursor: "pointer",
-          }}
-        >
-          Draw
-        </button>
-        <button
-          onClick={() => setToolMode("delete")}
-          style={{
-            padding: "6px 10px",
-            borderRadius: 6,
-            border: "1px solid #ccc",
-            background: toolMode === "delete" ? "#111" : "#fff",
-            color: toolMode === "delete" ? "#fff" : "#111",
-            fontSize: 12,
-            cursor: "pointer",
-          }}
-        >
-          Delete
-        </button>
+        {(["draw", "select", "delete"] as const).map((mode) => (
+          <button
+            key={mode}
+            onClick={() => {
+              setToolMode(mode);
+              if (mode !== "select") setSelectedElementId(null);
+            }}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "1px solid #ccc",
+              background: toolMode === mode ? "#111" : "#fff",
+              color: toolMode === mode ? "#fff" : "#111",
+              fontSize: 12,
+              cursor: "pointer",
+              textTransform: "capitalize",
+            }}
+          >
+            {mode}
+          </button>
+        ))}
       </div>
+
       {dimensions.width > 0 && dimensions.height > 0 && (
         <Stage
           ref={stageRef}
           width={dimensions.width}
           height={dimensions.height}
-          onMouseDown={handleDrawStart}
-          onMouseMove={handleDrawMove}
-          onMouseUp={handleDrawEnd}
-          onMouseLeave={handleDrawEnd}
-          onTouchStart={handleDrawStart}
-          onTouchMove={handleDrawMove}
-          onTouchEnd={handleDrawEnd}
-          style={{ touchAction: "none", cursor: toolMode === "draw" ? "crosshair" : "pointer" }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onTouchStart={handleMouseDown}
+          onTouchMove={handleMouseMove}
+          onTouchEnd={handleMouseUp}
+          style={{ touchAction: "none", cursor }}
         >
+          {/* Background */}
           <Layer>
-            <Rect
-              x={0}
-              y={0}
-              width={dimensions.width}
-              height={dimensions.height}
-              fill="#ffffff"
-            />
+            <Rect x={0} y={0} width={dimensions.width} height={dimensions.height} fill="#ffffff" />
           </Layer>
+
+          {/* Highlights */}
           <Layer>
             {highlights.map((highlight) => (
               <Rect
@@ -682,27 +560,41 @@ export function Whiteboard({ messages }: WhiteboardProps) {
               />
             ))}
           </Layer>
+
+          {/* Strokes (shapes + freehand) */}
           <Layer>
-            {strokes.map((stroke) => (
-              <Line
-                key={stroke.id}
-                points={stroke.points.flatMap((point) => [
-                  point.x * dimensions.width,
-                  point.y * dimensions.height,
-                ])}
-                stroke={stroke.color}
-                strokeWidth={stroke.strokeWidth}
-                lineCap="round"
-                lineJoin="round"
-                onClick={() => handleDeleteStroke(stroke.id)}
-                onTap={() => handleDeleteStroke(stroke.id)}
-                opacity={
-                  toolMode === "delete" && stroke.owner === "user"
-                    ? 0.8
-                    : 1
-                }
-              />
-            ))}
+            {strokes.map((stroke) => {
+              const isSelected = stroke.elementId === selectedElementId;
+              return (
+                <Line
+                  key={stroke.id}
+                  points={stroke.points.flatMap((point) => [
+                    point.x * dimensions.width,
+                    point.y * dimensions.height,
+                  ])}
+                  stroke={isSelected ? "#2563eb" : stroke.color}
+                  strokeWidth={isSelected ? stroke.strokeWidth + 1 : stroke.strokeWidth}
+                  lineCap="round"
+                  lineJoin="round"
+                  dash={isSelected ? [6, 3] : undefined}
+                  onClick={() => {
+                    if (toolMode === "delete" && stroke.owner === "user") {
+                      handleDeleteStroke(stroke.id);
+                    } else if (toolMode === "select") {
+                      handleSelectStroke(stroke.elementId);
+                    }
+                  }}
+                  onTap={() => {
+                    if (toolMode === "delete" && stroke.owner === "user") {
+                      handleDeleteStroke(stroke.id);
+                    } else if (toolMode === "select") {
+                      handleSelectStroke(stroke.elementId);
+                    }
+                  }}
+                  opacity={toolMode === "delete" && stroke.owner === "user" ? 0.8 : 1}
+                />
+              );
+            })}
             {localStroke.length > 1 && (
               <Line
                 points={localStroke.flatMap((point) => [
@@ -716,6 +608,8 @@ export function Whiteboard({ messages }: WhiteboardProps) {
               />
             )}
           </Layer>
+
+          {/* Text */}
           <Layer>
             {textItems.map((item) => (
               <Text

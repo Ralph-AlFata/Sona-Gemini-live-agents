@@ -46,7 +46,7 @@ export function App() {
 
       <main className="app-canvas">
         <section className="canvas-shell">
-          <Whiteboard messages={messages} />
+          <Whiteboard messages={messages} sessionId={SESSION_ID} />
         </section>
         <ChatPanel sessionId={SESSION_ID} />
       </main>
