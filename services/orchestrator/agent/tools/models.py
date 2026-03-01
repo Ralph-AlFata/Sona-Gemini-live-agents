@@ -24,12 +24,17 @@ class PointInput(_StrictModel):
 
 
 class DrawShapeInput(_StrictModel):
+    """
+    Input for the draw_shape tool.
+
+    `shape` is a rendering hint (e.g. "rectangle", "line", "triangle",
+    "right_triangle", "ellipse", "polygon", "square").
+    `points` are explicit vertex coordinates in normalised [0, 1] space.
+    Lines need 2 points; closed shapes should repeat the first point at the end.
+    """
+
     shape: str
-    x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
-    width: float = Field(gt=0.0, le=1.0)
-    height: float = Field(gt=0.0, le=1.0)
-    template_variant: str | None = None
+    points: list[PointInput] = Field(min_length=2)
     style: ToolStyle = Field(default_factory=ToolStyle)
 
 
@@ -47,10 +52,21 @@ class DrawFreehandInput(_StrictModel):
 
 
 class HighlightInput(_StrictModel):
-    x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
-    width: float = Field(gt=0.0, le=1.0)
-    height: float = Field(gt=0.0, le=1.0)
+    """
+    Input for the highlight_region tool.
+
+    `element_ids` is a list of IDs returned by previous draw operations.
+    The drawing service computes the union bounding box and renders the
+    appropriate visual based on `highlight_type`:
+    - "marker"       — semi-transparent rectangle (default)
+    - "circle"       — ellipse outline
+    - "pointer"      — ellipse + arrow
+    - "color_change" — applies the style to the target elements directly
+    """
+
+    element_ids: list[str] = Field(min_length=1, max_length=50)
+    highlight_type: str = Field(default="marker")
+    padding: float = Field(default=0.02, ge=0.0, le=0.1)
     style: ToolStyle = Field(default_factory=ToolStyle)
 
 
