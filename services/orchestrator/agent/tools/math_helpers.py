@@ -8,6 +8,7 @@ from google.adk.tools import ToolContext
 from sympy import Symbol, lambdify, sympify
 
 from agent.tools._shared import get_client, resolve_session_id
+from agent.tools.core import shape_to_points
 
 
 async def draw_axes_grid(
@@ -30,47 +31,39 @@ async def draw_axes_grid(
         "draw_shape",
         {
             "shape": "rectangle",
-            "x": x,
-            "y": y,
-            "width": width,
-            "height": height,
+            "points": shape_to_points("rectangle", x, y, width, height),
             "style": {"stroke_color": "#444", "stroke_width": 1.0, "opacity": 0.5},
         },
     )
     created.extend(resp.created_element_ids)
 
-    # X axis and Y axis.
+    # X axis
     x_axis_y = y + (height / 2)
+    resp = await client.execute(
+        session_id,
+        "draw_shape",
+        {
+            "shape": "line",
+            "points": shape_to_points("line", x, x_axis_y, width, 0.0),
+            "style": {"stroke_color": "#111", "stroke_width": 2.0},
+        },
+    )
+    created.extend(resp.created_element_ids)
+
+    # Y axis
     y_axis_x = x + (width / 2)
     resp = await client.execute(
         session_id,
         "draw_shape",
         {
             "shape": "line",
-            "x": x,
-            "y": x_axis_y,
-            "width": width,
-            "height": 0.0,
+            "points": shape_to_points("line", y_axis_x, y, 0.0, height),
             "style": {"stroke_color": "#111", "stroke_width": 2.0},
         },
     )
     created.extend(resp.created_element_ids)
 
-    resp = await client.execute(
-        session_id,
-        "draw_shape",
-        {
-            "shape": "line",
-            "x": y_axis_x,
-            "y": y,
-            "width": 0.0,
-            "height": height,
-            "style": {"stroke_color": "#111", "stroke_width": 2.0},
-        },
-    )
-    created.extend(resp.created_element_ids)
-
-    # Grid lines.
+    # Grid lines
     step_x = width / grid_lines
     step_y = height / grid_lines
     for i in range(1, grid_lines):
@@ -81,10 +74,7 @@ async def draw_axes_grid(
             "draw_shape",
             {
                 "shape": "line",
-                "x": gx,
-                "y": y,
-                "width": 0.0,
-                "height": height,
+                "points": shape_to_points("line", gx, y, 0.0, height),
                 "style": {"stroke_color": "#bbb", "stroke_width": 1.0, "opacity": 0.5},
             },
         )
@@ -95,10 +85,7 @@ async def draw_axes_grid(
             "draw_shape",
             {
                 "shape": "line",
-                "x": x,
-                "y": gy,
-                "width": width,
-                "height": 0.0,
+                "points": shape_to_points("line", x, gy, width, 0.0),
                 "style": {"stroke_color": "#bbb", "stroke_width": 1.0, "opacity": 0.5},
             },
         )
@@ -134,10 +121,7 @@ async def draw_number_line(
         "draw_shape",
         {
             "shape": "line",
-            "x": x,
-            "y": y,
-            "width": width,
-            "height": 0.0,
+            "points": shape_to_points("line", x, y, width, 0.0),
             "style": {"stroke_color": "#111", "stroke_width": 2.0},
         },
     )
@@ -152,10 +136,7 @@ async def draw_number_line(
             "draw_shape",
             {
                 "shape": "line",
-                "x": tx,
-                "y": y - (tick_height / 2),
-                "width": 0.0,
-                "height": tick_height,
+                "points": shape_to_points("line", tx, y - (tick_height / 2), 0.0, tick_height),
                 "style": {"stroke_color": "#111", "stroke_width": 2.0},
             },
         )
