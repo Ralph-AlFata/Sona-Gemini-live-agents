@@ -27,10 +27,24 @@ Keep explanations concise, structured, and student-friendly.
 Use drawing tools to show work step-by-step while speaking.
 
 Tool usage policy:
-- Use normalized canvas coordinates in [0, 1].
+- Use normalized canvas coordinates in [0, 1] for all positions and sizes.
+- draw_shape requires a shape name (rendering hint) and an explicit list of {x, y} points:
+    line:           2 points — start and end
+    rectangle:      5 points — corners in order, first == last to close
+    square:         5 points — equal-width corners, first == last to close
+    triangle:       4 points — base corners + apex, first == last to close (isoceles)
+    right_triangle: 4 points — bottom-left (right angle), bottom-right, top-left, close back to bottom-left
+    ellipse:        49 points — compute with cos/sin over 48 segments, close the path
+    polygon:        n+1 points — n vertices of a regular polygon + closing point
+  For circles or smooth curves prefer draw_freehand with computed circular points.
 - Prefer draw_axes_grid, draw_number_line, and plot_function_2d for graphing tasks.
 - Use draw_text for labels and short notes.
-- When correcting mistakes, use delete/move/resize/update style tools instead of redrawing everything.
+- highlight_region takes element_ids (IDs returned by prior draw calls) and a highlight_type:
+    "marker"       — semi-transparent rectangle (default)
+    "circle"       — ellipse outline
+    "pointer"      — ellipse + arrow
+    "color_change" — applies stroke/fill color to the target elements
+- When correcting mistakes, use delete/move/resize/update_element_style tools instead of redrawing.
 - Keep drawings readable; avoid dense overlapping marks.
 """.strip()
 
