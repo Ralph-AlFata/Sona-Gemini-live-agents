@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
 from uuid import uuid4
 
 from models import (
@@ -18,27 +18,11 @@ from models import (
     EraseRegionPayload,
     HighlightPayload,
     MoveElementsPayload,
-    Point,
     ResizeElementsPayload,
     StylePayload,
     UpdateStylePayload,
 )
-
-
-@dataclass(slots=True)
-class BBox:
-    x: float
-    y: float
-    width: float
-    height: float
-
-
-@dataclass(slots=True)
-class StoredElement:
-    element_id: str
-    element_type: str
-    payload: dict
-    bbox: BBox
+from store import BBox, ElementStore, StoredElement
 
 
 def _next_message_id() -> str:
@@ -72,18 +56,20 @@ def _style_to_dict(style: StylePayload) -> dict:
         "delay_ms": style.delay_ms,
     }
 
-# TODO: Since we are looking into changing the way we define shapes (from the points), we need to change how we infer the BBOX
+
 def _build_shape_element(payload: DrawShapePayload) -> tuple[dict, BBox]:
+    """Build a stored shape element. BBox is computed from the vertex points."""
+    points_raw = [p.model_dump() for p in payload.points]
+    xs = [p["x"] for p in points_raw]
+    ys = [p["y"] for p in points_raw]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
     draw_payload = {
         "shape": payload.shape,
-        "x": payload.x,
-        "y": payload.y,
-        "width": payload.width,
-        "height": payload.height,
-        "template_variant": payload.template_variant,
+        "points": points_raw,
         "style": _style_to_dict(payload.style),
     }
-    return draw_payload, BBox(payload.x, payload.y, payload.width, payload.height)
+    return draw_payload, BBox(min_x, min_y, max(max_x - min_x, 0.001), max(max_y - min_y, 0.001))
 
 
 def _build_text_element(payload: DrawTextPayload) -> tuple[dict, BBox]:
@@ -110,18 +96,7 @@ def _build_freehand_element(payload: DrawFreehandPayload) -> tuple[dict, BBox]:
         "points": [point.model_dump() for point in payload.points],
         "style": _style_to_dict(payload.style),
     }
-    return draw_payload, BBox(min_x, min_y, max_x - min_x, max_y - min_y)
-
-# TODO: This needs to change according to what we have set in the models.py
-def _build_highlight_element(payload: HighlightPayload) -> tuple[dict, BBox]:
-    draw_payload = {
-        "x": payload.x,
-        "y": payload.y,
-        "width": payload.width,
-        "height": payload.height,
-        "style": _style_to_dict(payload.style),
-    }
-    return draw_payload, BBox(payload.x, payload.y, payload.width, payload.height)
+    return draw_payload, BBox(min_x, min_y, max(max_x - min_x, 0.001), max(max_y - min_y, 0.001))
 
 
 def _translate_style_for_frontend(style: dict) -> dict:
@@ -144,12 +119,22 @@ def _create_message(command: DrawCommandRequest, message_type: str, payload: dic
         payload=payload,
     )
 
-# TODO: figure out why and how we should use it
+
 def _move_bbox(bbox: BBox, dx: float, dy: float) -> BBox:
+    """
+    Translate a bounding box by (dx, dy) in normalised coordinates.
+    The box dimensions are preserved; only the origin shifts.
+    Used by _move_payload to keep the stored BBox in sync after a move.
+    """
     return BBox(x=_clamp(bbox.x + dx), y=_clamp(bbox.y + dy), width=bbox.width, height=bbox.height)
 
-# TODO: figure out why and how we should use it
+
 def _resize_bbox(bbox: BBox, sx: float, sy: float) -> BBox:
+    """
+    Scale a bounding box around its centre by (sx, sy).
+    The centre stays fixed; width/height grow or shrink proportionally.
+    Used by _resize_payload to keep the stored BBox in sync after a resize.
+    """
     cx = bbox.x + (bbox.width / 2)
     cy = bbox.y + (bbox.height / 2)
     nw = min(1.0, bbox.width * sx)
@@ -161,9 +146,9 @@ def _resize_bbox(bbox: BBox, sx: float, sy: float) -> BBox:
         height=nh,
     )
 
-# TODO: Everything related to moving, we need to later think if we just allow the agent to move, or we can allow the user to "select elements and move them himself"
+
 def _move_payload(element: StoredElement, dx: float, dy: float) -> None:
-    if element.element_type == "freehand":
+    if element.element_type == "freehand" or "points" in element.payload:
         points = []
         for point in element.payload["points"]:
             points.append({"x": _clamp(float(point["x"]) + dx), "y": _clamp(float(point["y"]) + dy)})
@@ -183,13 +168,11 @@ def _move_payload(element: StoredElement, dx: float, dy: float) -> None:
 def _resize_payload(element: StoredElement, scale_x: float, scale_y: float) -> None:
     new_bbox = _resize_bbox(element.bbox, scale_x, scale_y)
 
-    if element.element_type == "freehand":
+    if element.element_type == "freehand" or "points" in element.payload:
         old_bbox = element.bbox
         if old_bbox.width == 0 or old_bbox.height == 0:
             element.bbox = new_bbox
             return
-        sx = new_bbox.width / old_bbox.width
-        sy = new_bbox.height / old_bbox.height
         points = []
         for point in element.payload["points"]:
             rel_x = (float(point["x"]) - old_bbox.x) / old_bbox.width
@@ -232,12 +215,61 @@ def _update_style_payload(element: StoredElement, update: UpdateStylePayload) ->
         style["delay_ms"] = update.delay_ms
     element.payload["style"] = style
 
-# TODO: Figure out what this does, and why is it used
-def apply_command(
+
+def _apply_style(element: StoredElement, style: StylePayload) -> None:
+    """Overwrite all style fields on an element from a StylePayload."""
+    element.payload["style"] = _style_to_dict(style)
+
+
+def _delete_elements_from_snapshot(
+    session_elements: dict[str, StoredElement],
+    element_ids: list[str],
+) -> tuple[list[str], list[DrawCommandFailure]]:
+    """
+    Remove elements by ID from the in-memory snapshot dict.
+
+    Returns (deleted_ids, failures). The caller is responsible for
+    calling store.delete_element() for each deleted ID to persist the change.
+    """
+    deleted: list[str] = []
+    failures: list[DrawCommandFailure] = []
+    for eid in element_ids:
+        if eid in session_elements:
+            session_elements.pop(eid)
+            deleted.append(eid)
+        else:
+            failures.append(DrawCommandFailure(element_id=eid, reason="element not found"))
+    return deleted, failures
+
+
+def _ellipse_points(cx: float, cy: float, rx: float, ry: float, segments: int = 40) -> list[dict]:
+    """Generate normalised ellipse points for freehand rendering."""
+    points = []
+    for i in range(segments + 1):
+        theta = 2 * math.pi * i / segments
+        points.append({
+            "x": _clamp(cx + rx * math.cos(theta)),
+            "y": _clamp(cy + ry * math.sin(theta)),
+        })
+    return points
+
+
+async def apply_command(
     command: DrawCommandRequest,
-    element_store: dict[str, dict[str, StoredElement]],
+    store: ElementStore,
 ) -> tuple[list[DSLMessage], DrawResponse]:
-    session_elements = element_store.setdefault(command.session_id, {})
+    """
+    Apply a single draw command to the element store and produce DSL messages.
+
+    Loads the current session elements from the store, applies the requested
+    operation in memory, persists each change back to the store (via
+    put_element / delete_element / clear_session), generates DSL messages for
+    each state change, and returns them alongside a DrawResponse summary.
+
+    DSL messages are later broadcast over WebSocket to connected frontend clients,
+    which render the canvas in real-time based on message type.
+    """
+    session_elements = await store.get_all_elements(command.session_id)
     messages: list[DSLMessage] = []
     failures: list[DrawCommandFailure] = []
     created_element_ids: list[str] = []
@@ -246,6 +278,7 @@ def apply_command(
     payload = command.payload
 
     if isinstance(payload, ClearPayload):
+        await store.clear_session(command.session_id)
         session_elements.clear()
         messages.append(_create_message(command, "clear", {"mode": "full"}))
         applied_count = 1
@@ -253,12 +286,14 @@ def apply_command(
     elif isinstance(payload, DrawShapePayload):
         element_id = _next_element_id()
         draw_payload, bbox = _build_shape_element(payload)
-        session_elements[element_id] = StoredElement(
+        element = StoredElement(
             element_id=element_id,
             element_type="shape",
             payload=draw_payload,
             bbox=bbox,
         )
+        session_elements[element_id] = element
+        await store.put_element(command.session_id, element)
         created_element_ids.append(element_id)
         applied_count = 1
         messages.append(
@@ -270,11 +305,7 @@ def apply_command(
                     "element_type": "shape",
                     "payload": {
                         "shape": draw_payload["shape"],
-                        "x": draw_payload["x"],
-                        "y": draw_payload["y"],
-                        "width": draw_payload["width"],
-                        "height": draw_payload["height"],
-                        "template_variant": draw_payload.get("template_variant"),
+                        "points": draw_payload["points"],
                         **_translate_style_for_frontend(draw_payload["style"]),
                     },
                 },
@@ -284,12 +315,14 @@ def apply_command(
     elif isinstance(payload, DrawTextPayload):
         element_id = _next_element_id()
         draw_payload, bbox = _build_text_element(payload)
-        session_elements[element_id] = StoredElement(
+        element = StoredElement(
             element_id=element_id,
             element_type="text",
             payload=draw_payload,
             bbox=bbox,
         )
+        session_elements[element_id] = element
+        await store.put_element(command.session_id, element)
         created_element_ids.append(element_id)
         applied_count = 1
         messages.append(
@@ -313,12 +346,14 @@ def apply_command(
     elif isinstance(payload, DrawFreehandPayload):
         element_id = _next_element_id()
         draw_payload, bbox = _build_freehand_element(payload)
-        session_elements[element_id] = StoredElement(
+        element = StoredElement(
             element_id=element_id,
             element_type="freehand",
             payload=draw_payload,
             bbox=bbox,
         )
+        session_elements[element_id] = element
+        await store.put_element(command.session_id, element)
         created_element_ids.append(element_id)
         applied_count = 1
         messages.append(
@@ -337,52 +372,152 @@ def apply_command(
         )
 
     elif isinstance(payload, HighlightPayload):
-        element_id = _next_element_id()
-        draw_payload, bbox = _build_highlight_element(payload)
-        session_elements[element_id] = StoredElement(
-            element_id=element_id,
-            element_type="highlight",
-            payload=draw_payload,
-            bbox=bbox,
-        )
-        created_element_ids.append(element_id)
-        applied_count = 1
-        messages.append(
-            _create_message(
-                command,
-                "element_created",
-                {
-                    "element_id": element_id,
-                    "element_type": "highlight",
-                    "payload": {
-                        "x": draw_payload["x"],
-                        "y": draw_payload["y"],
-                        "width": draw_payload["width"],
-                        "height": draw_payload["height"],
-                        **_translate_style_for_frontend(draw_payload["style"]),
-                    },
-                },
-            )
+        # Look up target elements and compute their union bounding box.
+        target_elements = [
+            session_elements[eid] for eid in payload.element_ids if eid in session_elements
+        ]
+        not_found = [eid for eid in payload.element_ids if eid not in session_elements]
+        failures.extend(
+            DrawCommandFailure(element_id=eid, reason="element not found") for eid in not_found
         )
 
+        if target_elements:
+            pad = payload.padding
+            xs_lo = [e.bbox.x for e in target_elements]
+            ys_lo = [e.bbox.y for e in target_elements]
+            xs_hi = [e.bbox.x + e.bbox.width for e in target_elements]
+            ys_hi = [e.bbox.y + e.bbox.height for e in target_elements]
+            ux = _clamp(min(xs_lo) - pad)
+            uy = _clamp(min(ys_lo) - pad)
+            ux2 = _clamp(max(xs_hi) + pad)
+            uy2 = _clamp(max(ys_hi) + pad)
+            uw = max(0.001, ux2 - ux)
+            uh = max(0.001, uy2 - uy)
+            style_dict = _style_to_dict(payload.style)
+
+            if payload.highlight_type == "color_change":
+                restyled = []
+                for element in target_elements:
+                    _apply_style(element, payload.style)
+                    await store.put_element(command.session_id, element)
+                    restyled.append({
+                        "element_id": element.element_id,
+                        "element_type": element.element_type,
+                        "style": _translate_style_for_frontend(element.payload.get("style", {})),
+                    })
+                    applied_count += 1
+                if restyled:
+                    messages.append(_create_message(command, "elements_restyled", {"elements": restyled}))
+
+            elif payload.highlight_type == "marker":
+                eid = _next_element_id()
+                h_payload = {"x": ux, "y": uy, "width": uw, "height": uh, "style": style_dict}
+                el = StoredElement(
+                    element_id=eid,
+                    element_type="highlight",
+                    payload=h_payload,
+                    bbox=BBox(ux, uy, uw, uh),
+                )
+                session_elements[eid] = el
+                await store.put_element(command.session_id, el)
+                created_element_ids.append(eid)
+                applied_count = 1
+                messages.append(_create_message(command, "element_created", {
+                    "element_id": eid,
+                    "element_type": "highlight",
+                    "payload": {
+                        "x": ux, "y": uy, "width": uw, "height": uh,
+                        **_translate_style_for_frontend(style_dict),
+                    },
+                }))
+
+            elif payload.highlight_type == "circle":
+                cx = ux + uw / 2
+                cy = uy + uh / 2
+                pts = _ellipse_points(cx, cy, uw / 2, uh / 2)
+                eid = _next_element_id()
+                el = StoredElement(
+                    element_id=eid,
+                    element_type="freehand",
+                    payload={"points": pts, "style": style_dict},
+                    bbox=BBox(ux, uy, uw, uh),
+                )
+                session_elements[eid] = el
+                await store.put_element(command.session_id, el)
+                created_element_ids.append(eid)
+                applied_count = 1
+                messages.append(_create_message(command, "element_created", {
+                    "element_id": eid,
+                    "element_type": "freehand",
+                    "payload": {"points": pts, **_translate_style_for_frontend(style_dict)},
+                }))
+
+            elif payload.highlight_type == "pointer":
+                # Ellipse around the region.
+                cx = ux + uw / 2
+                cy = uy + uh / 2
+                ellipse_pts = _ellipse_points(cx, cy, uw / 2, uh / 2)
+                eid1 = _next_element_id()
+                el1 = StoredElement(
+                    element_id=eid1,
+                    element_type="freehand",
+                    payload={"points": ellipse_pts, "style": style_dict},
+                    bbox=BBox(ux, uy, uw, uh),
+                )
+                session_elements[eid1] = el1
+                await store.put_element(command.session_id, el1)
+                created_element_ids.append(eid1)
+                messages.append(_create_message(command, "element_created", {
+                    "element_id": eid1,
+                    "element_type": "freehand",
+                    "payload": {"points": ellipse_pts, **_translate_style_for_frontend(style_dict)},
+                }))
+
+                # Arrow: vertical stem from below the ellipse up to its bottom edge.
+                arrow_tip_y = _clamp(uy2)
+                arrow_start_y = _clamp(uy2 + 0.07)
+                if arrow_start_y < 1.0 and arrow_start_y > arrow_tip_y:
+                    arrow_pts = [
+                        {"x": cx, "y": arrow_start_y},
+                        {"x": cx, "y": arrow_tip_y},
+                    ]
+                    eid2 = _next_element_id()
+                    el2 = StoredElement(
+                        element_id=eid2,
+                        element_type="freehand",
+                        payload={"points": arrow_pts, "style": style_dict},
+                        bbox=BBox(cx, arrow_tip_y, 0.001, arrow_start_y - arrow_tip_y),
+                    )
+                    session_elements[eid2] = el2
+                    await store.put_element(command.session_id, el2)
+                    created_element_ids.append(eid2)
+                    messages.append(_create_message(command, "element_created", {
+                        "element_id": eid2,
+                        "element_type": "freehand",
+                        "payload": {"points": arrow_pts, **_translate_style_for_frontend(style_dict)},
+                    }))
+
+                applied_count = len(created_element_ids)
+
     elif isinstance(payload, DeleteElementsPayload):
-        deleted: list[str] = []
-        for element_id in payload.element_ids:
-            if element_id in session_elements:
-                session_elements.pop(element_id, None)
-                deleted.append(element_id)
-                applied_count += 1
-            else:
-                failures.append(DrawCommandFailure(element_id=element_id, reason="element not found"))
+        deleted, new_failures = _delete_elements_from_snapshot(session_elements, payload.element_ids)
+        for eid in deleted:
+            await store.delete_element(command.session_id, eid)
+        failures.extend(new_failures)
+        applied_count = len(deleted)
         if deleted:
             messages.append(_create_message(command, "elements_deleted", {"element_ids": deleted}))
 
     elif isinstance(payload, EraseRegionPayload):
         target = BBox(payload.x, payload.y, payload.width, payload.height)
-        deleted = [element_id for element_id, element in session_elements.items() if _bbox_intersects(element.bbox, target)]
-        for element_id in deleted:
-            session_elements.pop(element_id, None)
-            applied_count += 1
+        ids_to_erase = [
+            eid for eid, el in session_elements.items()
+            if _bbox_intersects(el.bbox, target)
+        ]
+        deleted, _ = _delete_elements_from_snapshot(session_elements, ids_to_erase)
+        for eid in deleted:
+            await store.delete_element(command.session_id, eid)
+        applied_count = len(deleted)
         messages.append(_create_message(command, "elements_deleted", {"element_ids": deleted}))
 
     elif isinstance(payload, MoveElementsPayload):
@@ -393,13 +528,12 @@ def apply_command(
                 failures.append(DrawCommandFailure(element_id=element_id, reason="element not found"))
                 continue
             _move_payload(element, payload.dx, payload.dy)
-            transformed.append(
-                {
-                    "element_id": element_id,
-                    "element_type": element.element_type,
-                    "payload": element.payload,
-                }
-            )
+            await store.put_element(command.session_id, element)
+            transformed.append({
+                "element_id": element_id,
+                "element_type": element.element_type,
+                "payload": element.payload,
+            })
             applied_count += 1
         if transformed:
             messages.append(_create_message(command, "elements_transformed", {"elements": transformed}))
@@ -412,13 +546,12 @@ def apply_command(
                 failures.append(DrawCommandFailure(element_id=element_id, reason="element not found"))
                 continue
             _resize_payload(element, payload.scale_x, payload.scale_y)
-            transformed.append(
-                {
-                    "element_id": element_id,
-                    "element_type": element.element_type,
-                    "payload": element.payload,
-                }
-            )
+            await store.put_element(command.session_id, element)
+            transformed.append({
+                "element_id": element_id,
+                "element_type": element.element_type,
+                "payload": element.payload,
+            })
             applied_count += 1
         if transformed:
             messages.append(_create_message(command, "elements_transformed", {"elements": transformed}))
@@ -431,13 +564,12 @@ def apply_command(
                 failures.append(DrawCommandFailure(element_id=element_id, reason="element not found"))
                 continue
             _update_style_payload(element, payload)
-            restyled.append(
-                {
-                    "element_id": element_id,
-                    "element_type": element.element_type,
-                    "style": _translate_style_for_frontend(element.payload.get("style", {})),
-                }
-            )
+            await store.put_element(command.session_id, element)
+            restyled.append({
+                "element_id": element_id,
+                "element_type": element.element_type,
+                "style": _translate_style_for_frontend(element.payload.get("style", {})),
+            })
             applied_count += 1
         if restyled:
             messages.append(_create_message(command, "elements_restyled", {"elements": restyled}))
