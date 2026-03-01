@@ -22,10 +22,13 @@ def test_draw_create_and_edit_flow() -> None:
                 "operation": "draw_shape",
                 "payload": {
                     "shape": "rectangle",
-                    "x": 0.1,
-                    "y": 0.1,
-                    "width": 0.3,
-                    "height": 0.2,
+                    "points": [
+                        {"x": 0.1, "y": 0.1},
+                        {"x": 0.4, "y": 0.1},
+                        {"x": 0.4, "y": 0.3},
+                        {"x": 0.1, "y": 0.3},
+                        {"x": 0.1, "y": 0.1},
+                    ],
                     "style": {"stroke_color": "#f00", "stroke_width": 2.0},
                 },
             },

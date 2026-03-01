@@ -41,10 +41,13 @@ async def test_draw_shape_maps_payload(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = await core.draw_shape(
         shape="rectangle",
-        x=0.1,
-        y=0.2,
-        width=0.3,
-        height=0.4,
+        points=[
+            {"x": 0.1, "y": 0.2},
+            {"x": 0.4, "y": 0.2},
+            {"x": 0.4, "y": 0.6},
+            {"x": 0.1, "y": 0.6},
+            {"x": 0.1, "y": 0.2},
+        ],
         stroke_color="#ff0000",
         stroke_width=3.0,
     )
@@ -52,6 +55,7 @@ async def test_draw_shape_maps_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["status"] == "success"
     assert fake.calls[0]["operation"] == "draw_shape"
     assert fake.calls[0]["payload"]["style"]["stroke_color"] == "#ff0000"
+    assert len(fake.calls[0]["payload"]["points"]) == 5
 
 
 @pytest.mark.asyncio
