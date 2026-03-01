@@ -32,25 +32,32 @@ class StylePayload(_StrictBase):
     delay_ms: int = Field(default=30, ge=0, le=1_000)
 
 
-# TODO: Review the way we are thinking about the Shapes. Instead of defining them with x,y,width,height. I think we should define them using a series of points
-# I think this is why it could not draw a right angle triangle previously
-# This could make it easier for us later, because we can define more things because we know the exact location of the points that matter
 class DrawShapePayload(_StrictBase):
-    shape: Literal["rectangle", "ellipse", "line", "triangle", "polygon", "square"]
-    x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
-    width: float = Field(gt=0.0, le=1.0)
-    height: float = Field(gt=0.0, le=1.0)
-    style: StylePayload = Field(default_factory=StylePayload)
-    template_variant: Literal[
-        "right_triangle",
-        "circle_outline",
-        "number_line",
-        "cartesian_axes",
-    ] | None = None
+    """
+    Draw a shape defined by explicit vertex points.
 
-# TODO: Check if the x, y is the location where the text starts? or something else
+    `shape` is a rendering hint for the frontend (e.g. "rectangle", "line",
+    "triangle", "ellipse", "polygon", "square", "right_triangle"). Points are
+    in normalised [0, 1] canvas coordinates. At least 2 points are required.
+    Lines use 2 points; closed shapes should repeat the first point at the end.
+    """
+
+    shape: Literal[
+        "rectangle", "ellipse", "line", "triangle", "right_triangle",
+        "polygon", "square",
+    ]
+    points: list[Point] = Field(min_length=2)
+    style: StylePayload = Field(default_factory=StylePayload)
+
+
 class DrawTextPayload(_StrictBase):
+    """
+    Draw a text label on the canvas.
+
+    `x, y` is the top-left origin of the text bounding box in normalised
+    [0, 1] canvas coordinates. `font_size` is in pixels.
+    """
+
     text: str = Field(min_length=1, max_length=2_000)
     x: float = Field(ge=0.0, le=1.0)
     y: float = Field(ge=0.0, le=1.0)
@@ -62,14 +69,25 @@ class DrawFreehandPayload(_StrictBase):
     points: list[Point] = Field(min_length=2)
     style: StylePayload = Field(default_factory=StylePayload)
 
-# TODO: For the highlighlit payload, I think the width and heigh should not be random, they should be based on what is the object you are trying to highlight
-# Therefore, the arguments isntead of x,y,width,height, they would become like "what is the object/objects you aim to highlight"
-# I also want several types of highlighting: One which is "circle around something", another "circle with a pointer", "highilight like marker", or "change the color of the element"
+
 class HighlightPayload(_StrictBase):
-    x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
-    width: float = Field(gt=0.0, le=1.0)
-    height: float = Field(gt=0.0, le=1.0)
+    """
+    Highlight one or more existing canvas elements.
+
+    `element_ids` references elements created by previous draw operations.
+    The service looks up their bounding boxes, computes a union region with
+    `padding`, and creates a visual highlight of the requested type:
+
+    - "marker"      — semi-transparent rectangle over the region (default)
+    - "circle"      — ellipse outline around the region
+    - "pointer"     — ellipse outline + arrow pointing at the region
+    - "color_change"— updates the stroke/fill color of the target elements
+                      directly (no new element is created)
+    """
+
+    element_ids: list[str] = Field(min_length=1, max_length=50)
+    highlight_type: Literal["marker", "circle", "pointer", "color_change"] = "marker"
+    padding: float = Field(default=0.02, ge=0.0, le=0.1)
     style: StylePayload = Field(default_factory=StylePayload)
 
 
@@ -80,9 +98,15 @@ class ClearPayload(_StrictBase):
 class DeleteElementsPayload(_StrictBase):
     element_ids: list[str] = Field(min_length=1, max_length=500)
 
-# TODO: Double check if it's about deleting everything in a certain area.
-# The way this needs to be processed is that it takes the area, finds the elements in this area, then deletes them through the DeleteElements
+
 class EraseRegionPayload(_StrictBase):
+    """
+    Delete all elements whose bounding box intersects the given region.
+
+    Equivalent to finding all elements in the area and passing their IDs to
+    DeleteElementsPayload — the deletion logic is shared internally.
+    """
+
     x: float = Field(ge=0.0, le=1.0)
     y: float = Field(ge=0.0, le=1.0)
     width: float = Field(gt=0.0, le=1.0)
@@ -168,6 +192,7 @@ _PAYLOAD_MODEL_MAP: dict[str, type[BaseModel]] = {
     "update_style": UpdateStylePayload,
 }
 
+
 class DrawCommandRequest(_StrictBase):
     command_id: str = Field(default_factory=lambda: uuid4().hex[:12], min_length=1, max_length=128)
     operation: DrawOperation
@@ -199,8 +224,23 @@ DSLMessageType = Literal[
     "clear",
 ]
 
-# TODO: Check if we should add element_id here
+
 class DSLMessage(_StrictBase):
+    """
+    A single DSL reconciliation message broadcast to WebSocket subscribers.
+
+    `id` is an 8-char unique message identifier. `command_id` links this
+    message back to the originating DrawCommandRequest.
+
+    Element-specific IDs are carried inside `payload`, not at the top level,
+    because different message types reference different numbers of elements:
+    - element_created:       payload.element_id  (single)
+    - elements_deleted:      payload.element_ids (list)
+    - elements_transformed:  payload.elements[].element_id (list)
+    - elements_restyled:     payload.elements[].element_id (list)
+    - clear:                 payload.mode
+    """
+
     version: Literal["2.0"] = "2.0"
     id: str = Field(min_length=8, max_length=8)
     command_id: str = Field(min_length=1, max_length=128)
