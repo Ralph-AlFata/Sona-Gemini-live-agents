@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
@@ -12,7 +10,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from dsl import StoredElement, apply_command
+from config import settings
+from dsl import apply_command
 from models import (
     ClearPayload,
     ClearRequest,
@@ -20,6 +19,7 @@ from models import (
     DrawResponse,
     HealthResponse,
 )
+from store import ElementStore, InMemoryElementStore
 
 load_dotenv()
 
@@ -34,11 +34,11 @@ class ConnectionManager:
     """Tracks WebSocket subscribers by session and broadcasts JSON DSL messages."""
 
     def __init__(self) -> None:
-        self._connections: dict[str, set[WebSocket]] = defaultdict(set)
+        self._connections: dict[str, set[WebSocket]] = {}
 
     async def connect(self, session_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
-        self._connections[session_id].add(websocket)
+        self._connections.setdefault(session_id, set()).add(websocket)
 
     def disconnect(self, session_id: str, websocket: WebSocket) -> None:
         subscribers = self._connections.get(session_id)
@@ -67,15 +67,30 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
-# session_id -> element_id -> element\
-# TODO: In the future, we need to integrate database in the cloud. We need to handle the different sessions for the different users, and have the canvas there, etc...
-ELEMENT_STORE: dict[str, dict[str, StoredElement]] = {}
+
+# Module-level store; replaced with FirestoreElementStore in lifespan when USE_FIRESTORE=true.
+_store: ElementStore = InMemoryElementStore()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    logger.info("Drawing service starting up on port %s", os.environ.get("PORT", "8002"))
+    global _store
+
+    if settings.use_firestore:
+        from firestore_store import FirestoreElementStore, close_firestore_client, init_firestore_client
+        init_firestore_client()
+        _store = FirestoreElementStore()
+        logger.info("Drawing service using Firestore element store")
+    else:
+        logger.info("Drawing service using in-memory element store")
+
+    logger.info("Drawing service starting up on port %s", settings.port)
     yield
+
+    if settings.use_firestore:
+        from firestore_store import close_firestore_client
+        await close_firestore_client()
+
     logger.info("Drawing service shutting down")
 
 
@@ -90,10 +105,8 @@ _allowed_origins: list[str] = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
-# TODO: Standardize everything that is coming from the .env. Create a config.py file for the drawing microservice, then load the settings from there
-_extra_origin = os.environ.get("FRONTEND_URL")
-if _extra_origin:
-    _allowed_origins.append(_extra_origin)
+if settings.frontend_url:
+    _allowed_origins.append(settings.frontend_url)
 
 app.add_middleware(
     CORSMiddleware,
@@ -126,7 +139,7 @@ async def websocket_session(session_id: str, websocket: WebSocket) -> None:
     tags=["drawing"],
 )
 async def draw(body: DrawCommandRequest) -> DrawResponse:
-    messages, response = apply_command(body, ELEMENT_STORE)
+    messages, response = await apply_command(body, _store)
 
     delivered = 0
     for message in messages:
@@ -154,7 +167,7 @@ async def clear_canvas(body: ClearRequest) -> DrawResponse:
         operation="clear_canvas",
         payload=ClearPayload(),
     )
-    messages, response = apply_command(draw_request, ELEMENT_STORE)
+    messages, response = await apply_command(draw_request, _store)
 
     for message in messages:
         await manager.broadcast(draw_request.session_id, message.model_dump(mode="json"))
