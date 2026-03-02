@@ -69,6 +69,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # Module-level store; replaced with FirestoreElementStore in lifespan when USE_FIRESTORE=true.
+# TODO: Currently, it is for in memory, later down the line we need to fix for the cloud. Need to double check, but we think we just need to replace InMemoryElementStore() with FireStore()
 _store: ElementStore = InMemoryElementStore()
 
 
@@ -154,7 +155,7 @@ async def draw(body: DrawCommandRequest) -> DrawResponse:
     )
     return response
 
-
+# TODO: Check why are we setting here the status code to 202
 @app.post(
     "/draw/clear",
     response_model=DrawResponse,
