@@ -71,7 +71,7 @@ def _build_shape_element(payload: DrawShapePayload) -> tuple[dict, BBox]:
     }
     return draw_payload, BBox(min_x, min_y, max(max_x - min_x, 0.001), max(max_y - min_y, 0.001))
 
-
+# TODO: Check if this is the potential issue related to the highlight going too much out of bounds when working with equations
 def _build_text_element(payload: DrawTextPayload) -> tuple[dict, BBox]:
     approx_width = min(0.8, 0.012 * len(payload.text) * (payload.font_size / 24))
     approx_height = min(0.25, 0.03 * (payload.font_size / 24))
@@ -84,7 +84,7 @@ def _build_text_element(payload: DrawTextPayload) -> tuple[dict, BBox]:
     }
     return draw_payload, BBox(payload.x, payload.y, approx_width, approx_height)
 
-
+# TODO: Check why when we ask it to draw an S-shaped line, it gives us this weird thing
 def _build_freehand_element(payload: DrawFreehandPayload) -> tuple[dict, BBox]:
     xs = [point.x for point in payload.points]
     ys = [point.y for point in payload.points]
@@ -370,7 +370,7 @@ async def apply_command(
                 },
             )
         )
-
+# TODO: Check if the problem related to the highlight going out of bounds is here. It could potentially be because of the padding size
     elif isinstance(payload, HighlightPayload):
         # Look up target elements and compute their union bounding box.
         target_elements = [

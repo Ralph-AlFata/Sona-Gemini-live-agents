@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from agent.tools import core, math_helpers
+from agent.tools.models import DrawShapeInput, HighlightInput
 
 
 class FakeClient:
@@ -76,3 +78,26 @@ async def test_plot_function_no_points_returns_error(monkeypatch: pytest.MonkeyP
     assert result["status"] in {"success", "error"}
     if result["status"] == "error":
         assert result["applied_count"] == 0
+
+
+def test_draw_shape_rejects_unsupported_shape() -> None:
+    with pytest.raises(ValidationError):
+        DrawShapeInput.model_validate(
+            {
+                "shape": "hexagon",
+                "points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.2}],
+                "style": {},
+            }
+        )
+
+
+def test_highlight_rejects_unsupported_type() -> None:
+    with pytest.raises(ValidationError):
+        HighlightInput.model_validate(
+            {
+                "element_ids": ["el_1"],
+                "highlight_type": "outline",
+                "padding": 0.01,
+                "style": {},
+            }
+        )

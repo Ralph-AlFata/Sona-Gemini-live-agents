@@ -112,7 +112,7 @@ class EraseRegionPayload(_StrictBase):
     width: float = Field(gt=0.0, le=1.0)
     height: float = Field(gt=0.0, le=1.0)
 
-
+# TODO: I want to check in the actual endpoint, if the displacement becomes "outside of the canvas", we should cap it
 class MoveElementsPayload(_StrictBase):
     element_ids: list[str] = Field(min_length=1, max_length=500)
     dx: float = Field(ge=-1.0, le=1.0)

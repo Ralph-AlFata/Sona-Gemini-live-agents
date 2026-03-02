@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -33,7 +35,15 @@ class DrawShapeInput(_StrictModel):
     Lines need 2 points; closed shapes should repeat the first point at the end.
     """
 
-    shape: str
+    shape: Literal[
+        "rectangle",
+        "ellipse",
+        "line",
+        "triangle",
+        "right_triangle",
+        "polygon",
+        "square",
+    ]
     points: list[PointInput] = Field(min_length=2)
     style: ToolStyle = Field(default_factory=ToolStyle)
 
@@ -65,7 +75,7 @@ class HighlightInput(_StrictModel):
     """
 
     element_ids: list[str] = Field(min_length=1, max_length=50)
-    highlight_type: str = Field(default="marker")
+    highlight_type: Literal["marker", "circle", "pointer", "color_change"] = "marker"
     padding: float = Field(default=0.02, ge=0.0, le=0.1)
     style: ToolStyle = Field(default_factory=ToolStyle)
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +15,7 @@ class Settings(BaseSettings):
     google_cloud_project: str = ""
     google_cloud_location: str = "us-central1"
     model_name: str = "gemini-live-2.5-flash-native-audio"
+    chat_mode: Literal["auto", "gemini", "mock"] = "auto"
     app_name: str = "sona-orchestrator"
     default_user_id: str = "anonymous-user"
     default_session_id: str = "local-session"

@@ -42,7 +42,7 @@ class DrawingClient:
         return DrawingCommandResult(
             session_id=str(body["session_id"]),
             command_id=str(body["command_id"]),
-            operation=str(body["operation"]),
+            operation=str(body.get("operation", operation)),
             applied_count=int(body.get("applied_count", 0)),
             created_element_ids=[str(item) for item in body.get("created_element_ids", [])],
             failed_operations=list(body.get("failed_operations", [])),
