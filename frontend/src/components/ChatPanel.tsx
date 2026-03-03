@@ -85,7 +85,15 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Type a math prompt..."
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              if (input.trim() && !sending) {
+                e.currentTarget.form?.requestSubmit();
+              }
+            }
+          }}
+          placeholder="Type a math prompt... (Enter to send, Shift+Enter for newline)"
           disabled={sending}
           rows={3}
         />
