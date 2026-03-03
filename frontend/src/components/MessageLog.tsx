@@ -52,11 +52,11 @@ export function MessageLog({ messages }: MessageLogProps) {
 const containerStyle: React.CSSProperties = {
   position: "fixed",
   bottom: 16,
-  right: 16,
+  left: 16,
   zIndex: 1000,
   display: "flex",
   flexDirection: "column",
-  alignItems: "flex-end",
+  alignItems: "flex-start",
   gap: 8,
 };
 
