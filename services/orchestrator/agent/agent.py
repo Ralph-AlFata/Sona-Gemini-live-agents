@@ -17,6 +17,7 @@ from agent.tools import (
     move_elements,
     plot_function_2d,
     resize_elements,
+    update_element_points,
     update_element_style,
 )
 from config import settings
@@ -57,7 +58,7 @@ Tool usage policy:
     "circle"       — ellipse outline
     "pointer"      — ellipse + arrow
     "color_change" — applies stroke/fill color to the target elements
-- When correcting mistakes, use delete/move/resize/update_element_style tools instead of redrawing.
+- When correcting mistakes, use delete/move/resize/update_element_style/update_element_points tools instead of redrawing.
 - Keep drawings readable; avoid dense overlapping marks.
 """.strip()
 
@@ -75,6 +76,7 @@ root_agent = Agent(
         erase_region,
         move_elements,
         resize_elements,
+        update_element_points,
         update_element_style,
         draw_axes_grid,
         draw_number_line,

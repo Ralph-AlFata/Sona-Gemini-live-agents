@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent.tools import core, math_helpers
+from agent.tools import core, editing, math_helpers
 from agent.tools.models import DrawShapeInput, HighlightInput
 
 
@@ -103,6 +103,24 @@ async def test_draw_axes_grid_uses_viewport_command(monkeypatch: pytest.MonkeyPa
     assert fake.calls[0]["payload"]["grid_lines"] == 12
     assert fake.calls[0]["payload"]["domain_min"] == -5
     assert fake.calls[0]["payload"]["y_max"] == 8
+
+
+@pytest.mark.asyncio
+async def test_update_element_points_maps_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeClient()
+    monkeypatch.setattr(editing, "get_client", lambda: fake)
+    monkeypatch.setattr(editing, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await editing.update_element_points(
+        element_id="el_123",
+        mode="append",
+        points=[{"x": 0.3, "y": 0.3}, {"x": 0.4, "y": 0.4}],
+    )
+
+    assert result["status"] == "success"
+    assert fake.calls[0]["operation"] == "update_points"
+    assert fake.calls[0]["payload"]["element_id"] == "el_123"
+    assert fake.calls[0]["payload"]["mode"] == "append"
 
 
 def test_draw_shape_rejects_unsupported_shape() -> None:

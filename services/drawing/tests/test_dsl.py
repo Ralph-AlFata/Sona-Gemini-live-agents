@@ -119,6 +119,72 @@ async def test_move_and_resize_transform_element() -> None:
     assert response.applied_count == 1
 
 
+async def test_update_points_replaces_existing_shape_points() -> None:
+    store = InMemoryElementStore()
+    create = DrawCommandRequest(
+        command_id="cmd_shape_update_create",
+        session_id="s1",
+        operation="draw_shape",
+        payload={"shape": "rectangle", "points": RECT_POINTS, "style": {}},
+    )
+    _, create_resp = await apply_command(create, store)
+    element_id = create_resp.created_element_ids[0]
+
+    replacement_points = [
+        {"x": 0.15, "y": 0.15},
+        {"x": 0.55, "y": 0.15},
+        {"x": 0.55, "y": 0.35},
+        {"x": 0.15, "y": 0.35},
+        {"x": 0.15, "y": 0.15},
+    ]
+    update = DrawCommandRequest(
+        command_id="cmd_shape_update_replace",
+        session_id="s1",
+        operation="update_points",
+        payload={"element_id": element_id, "mode": "replace", "points": replacement_points},
+    )
+    messages, response = await apply_command(update, store)
+
+    assert response.applied_count == 1
+    assert len(messages) == 1
+    assert messages[0].type == "elements_transformed"
+    transformed = messages[0].payload["elements"][0]["payload"]["points"]
+    assert transformed == replacement_points
+
+
+async def test_update_points_appends_to_freehand_points() -> None:
+    store = InMemoryElementStore()
+    create = DrawCommandRequest(
+        command_id="cmd_freehand_create",
+        session_id="s1",
+        operation="draw_freehand",
+        payload={
+            "points": [{"x": 0.2, "y": 0.2}, {"x": 0.3, "y": 0.3}],
+            "style": {},
+        },
+    )
+    _, create_resp = await apply_command(create, store)
+    element_id = create_resp.created_element_ids[0]
+
+    append = DrawCommandRequest(
+        command_id="cmd_freehand_append",
+        session_id="s1",
+        operation="update_points",
+        payload={
+            "element_id": element_id,
+            "mode": "append",
+            "points": [{"x": 0.4, "y": 0.4}, {"x": 0.5, "y": 0.5}],
+        },
+    )
+    messages, response = await apply_command(append, store)
+
+    assert response.applied_count == 1
+    assert messages[0].type == "elements_transformed"
+    transformed = messages[0].payload["elements"][0]["payload"]["points"]
+    assert len(transformed) == 4
+    assert transformed[-1] == {"x": 0.5, "y": 0.5}
+
+
 async def test_delete_and_clear() -> None:
     store = InMemoryElementStore()
     create = DrawCommandRequest(

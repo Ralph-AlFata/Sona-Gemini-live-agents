@@ -10,6 +10,7 @@ from agent.tools.models import (
     EraseRegionInput,
     MoveElementsInput,
     ResizeElementsInput,
+    UpdatePointsInput,
     UpdateStyleInput,
 )
 
@@ -74,6 +75,27 @@ async def resize_elements(
     result = await get_client().execute(
         session_id=resolve_session_id(tool_context),
         operation="resize_elements",
+        payload=data.model_dump(mode="json"),
+    )
+    return result_to_dict(result)
+
+
+async def update_element_points(
+    element_id: str,
+    points: list[dict[str, float]],
+    mode: str = "replace",
+    tool_context: ToolContext | None = None,
+) -> dict:
+    data = UpdatePointsInput.model_validate(
+        {
+            "element_id": element_id,
+            "points": points,
+            "mode": mode,
+        }
+    )
+    result = await get_client().execute(
+        session_id=resolve_session_id(tool_context),
+        operation="update_points",
         payload=data.model_dump(mode="json"),
     )
     return result_to_dict(result)

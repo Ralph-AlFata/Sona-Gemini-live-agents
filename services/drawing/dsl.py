@@ -21,6 +21,7 @@ from models import (
     MoveElementsPayload,
     ResizeElementsPayload,
     StylePayload,
+    UpdatePointsPayload,
     UpdateStylePayload,
 )
 from store import BBox, ElementStore, StoredElement
@@ -45,6 +46,16 @@ def _bbox_intersects(a: BBox, b: BBox) -> bool:
         or a.y + a.height < b.y
         or b.y + b.height < a.y
     )
+
+
+def _bbox_from_points(points: list[dict[str, float]]) -> BBox:
+    xs = [float(point["x"]) for point in points]
+    ys = [float(point["y"]) for point in points]
+    min_x = min(xs)
+    max_x = max(xs)
+    min_y = min(ys)
+    max_y = max(ys)
+    return BBox(min_x, min_y, max(max_x - min_x, 0.001), max(max_y - min_y, 0.001))
 
 
 def _style_to_dict(style: StylePayload) -> dict:
@@ -568,6 +579,58 @@ async def apply_command(
             applied_count += 1
         if transformed:
             messages.append(_create_message(command, "elements_transformed", {"elements": transformed}))
+
+    elif isinstance(payload, UpdatePointsPayload):
+        element = session_elements.get(payload.element_id)
+        if element is None:
+            failures.append(DrawCommandFailure(element_id=payload.element_id, reason="element not found"))
+        elif "points" not in element.payload or not isinstance(element.payload["points"], list):
+            failures.append(
+                DrawCommandFailure(
+                    element_id=payload.element_id,
+                    reason="element does not support point updates",
+                )
+            )
+        else:
+            incoming_points = [point.model_dump() for point in payload.points]
+            existing_points = [
+                {"x": float(point["x"]), "y": float(point["y"])}
+                for point in element.payload["points"]
+                if isinstance(point, dict) and "x" in point and "y" in point
+            ]
+
+            if payload.mode == "append":
+                next_points = existing_points + incoming_points
+            else:
+                next_points = incoming_points
+
+            if len(next_points) < 2:
+                failures.append(
+                    DrawCommandFailure(
+                        element_id=payload.element_id,
+                        reason="updated point list must contain at least 2 points",
+                    )
+                )
+            else:
+                element.payload["points"] = next_points
+                element.bbox = _bbox_from_points(next_points)
+                await store.put_element(command.session_id, element)
+                applied_count = 1
+                messages.append(
+                    _create_message(
+                        command,
+                        "elements_transformed",
+                        {
+                            "elements": [
+                                {
+                                    "element_id": payload.element_id,
+                                    "element_type": element.element_type,
+                                    "payload": element.payload,
+                                }
+                            ]
+                        },
+                    )
+                )
 
     elif isinstance(payload, UpdateStylePayload):
         restyled = []
