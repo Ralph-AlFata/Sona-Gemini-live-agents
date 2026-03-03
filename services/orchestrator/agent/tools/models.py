@@ -104,6 +104,18 @@ class ResizeElementsInput(_StrictModel):
     scale_y: float = Field(gt=0.0, le=10.0)
 
 
+class UpdatePointsInput(_StrictModel):
+    element_id: str = Field(min_length=1, max_length=128)
+    points: list[PointInput] = Field(min_length=1)
+    mode: Literal["replace", "append"] = "replace"
+
+    @model_validator(mode="after")
+    def _validate_points_for_mode(self) -> "UpdatePointsInput":
+        if self.mode == "replace" and len(self.points) < 2:
+            raise ValueError("replace mode requires at least 2 points")
+        return self
+
+
 class UpdateStyleInput(_StrictModel):
     element_ids: list[str] = Field(min_length=1, max_length=500)
     stroke_color: str | None = Field(default=None, min_length=1, max_length=64)

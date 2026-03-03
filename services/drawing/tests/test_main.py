@@ -50,6 +50,28 @@ def test_draw_create_and_edit_flow() -> None:
         assert move.status_code == 202
         assert move.json()["applied_count"] == 1
 
+        update_points = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_b2",
+                "session_id": "s1",
+                "operation": "update_points",
+                "payload": {
+                    "element_id": element_id,
+                    "mode": "replace",
+                    "points": [
+                        {"x": 0.2, "y": 0.2},
+                        {"x": 0.5, "y": 0.2},
+                        {"x": 0.5, "y": 0.35},
+                        {"x": 0.2, "y": 0.35},
+                        {"x": 0.2, "y": 0.2},
+                    ],
+                },
+            },
+        )
+        assert update_points.status_code == 202
+        assert update_points.json()["applied_count"] == 1
+
         style = client.post(
             "/draw",
             json={

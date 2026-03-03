@@ -153,6 +153,18 @@ class ResizeElementsPayload(_StrictBase):
     scale_y: float = Field(gt=0.0, le=10.0)
 
 
+class UpdatePointsPayload(_StrictBase):
+    element_id: str = Field(min_length=1, max_length=128)
+    points: list[Point] = Field(min_length=1)
+    mode: Literal["replace", "append"] = "replace"
+
+    @model_validator(mode="after")
+    def _validate_points_for_mode(self) -> "UpdatePointsPayload":
+        if self.mode == "replace" and len(self.points) < 2:
+            raise ValueError("replace mode requires at least 2 points")
+        return self
+
+
 class UpdateStylePayload(_StrictBase):
     element_ids: list[str] = Field(min_length=1, max_length=500)
     stroke_color: str | None = Field(default=None, min_length=1, max_length=64)
@@ -190,6 +202,7 @@ DrawOperation = Literal[
     "erase_region",
     "move_elements",
     "resize_elements",
+    "update_points",
     "update_style",
 ]
 
@@ -205,6 +218,7 @@ DrawPayload = (
     | EraseRegionPayload
     | MoveElementsPayload
     | ResizeElementsPayload
+    | UpdatePointsPayload
     | UpdateStylePayload
 )
 
@@ -220,6 +234,7 @@ _PAYLOAD_MODEL_MAP: dict[str, type[BaseModel]] = {
     "erase_region": EraseRegionPayload,
     "move_elements": MoveElementsPayload,
     "resize_elements": ResizeElementsPayload,
+    "update_points": UpdatePointsPayload,
     "update_style": UpdateStylePayload,
 }
 

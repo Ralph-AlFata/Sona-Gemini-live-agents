@@ -6,6 +6,7 @@ from agent.tools.editing import (
     erase_region,
     move_elements,
     resize_elements,
+    update_element_points,
     update_element_style,
 )
 from agent.tools.math_helpers import draw_axes_grid, draw_number_line, plot_function_2d
@@ -20,6 +21,7 @@ __all__ = [
     "erase_region",
     "move_elements",
     "resize_elements",
+    "update_element_points",
     "update_element_style",
     "draw_axes_grid",
     "draw_number_line",
