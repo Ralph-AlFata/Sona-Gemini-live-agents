@@ -577,6 +577,7 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
                   lineCap="round"
                   lineJoin="round"
                   dash={isSelected ? [6, 3] : undefined}
+                  hitStrokeWidth={toolMode === "delete" ? 24 : 12}
                   onClick={() => {
                     if (toolMode === "delete" && stroke.owner === "user") {
                       handleDeleteStroke(stroke.id);
