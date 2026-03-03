@@ -80,6 +80,31 @@ async def test_plot_function_no_points_returns_error(monkeypatch: pytest.MonkeyP
         assert result["applied_count"] == 0
 
 
+@pytest.mark.asyncio
+async def test_draw_axes_grid_uses_viewport_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeClient()
+    monkeypatch.setattr(math_helpers, "get_client", lambda: fake)
+    monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await math_helpers.draw_axes_grid(
+        x=0.2,
+        y=0.15,
+        width=0.6,
+        height=0.7,
+        domain_min=-5,
+        domain_max=5,
+        y_min=-2,
+        y_max=8,
+        grid_lines=12,
+    )
+
+    assert result["status"] == "success"
+    assert fake.calls[0]["operation"] == "set_graph_viewport"
+    assert fake.calls[0]["payload"]["grid_lines"] == 12
+    assert fake.calls[0]["payload"]["domain_min"] == -5
+    assert fake.calls[0]["payload"]["y_max"] == 8
+
+
 def test_draw_shape_rejects_unsupported_shape() -> None:
     with pytest.raises(ValidationError):
         DrawShapeInput.model_validate(

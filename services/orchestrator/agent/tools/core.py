@@ -95,6 +95,7 @@ async def draw_shape(
     opacity: float = 1.0,
     z_index: int = 0,
     delay_ms: int = 30,
+    animate: bool = True,
     tool_context: ToolContext | None = None,
 ) -> dict:
     """
@@ -124,6 +125,7 @@ async def draw_shape(
                 "opacity": opacity,
                 "z_index": z_index,
                 "delay_ms": delay_ms,
+                "animate": animate,
             },
         }
     )
@@ -146,6 +148,7 @@ async def draw_text(
     opacity: float = 1.0,
     z_index: int = 0,
     delay_ms: int = 30,
+    animate: bool = True,
     tool_context: ToolContext | None = None,
 ) -> dict:
     data = DrawTextInput.model_validate(
@@ -161,6 +164,7 @@ async def draw_text(
                 "opacity": opacity,
                 "z_index": z_index,
                 "delay_ms": delay_ms,
+                "animate": animate,
             },
         }
     )
@@ -180,6 +184,7 @@ async def draw_freehand(
     opacity: float = 1.0,
     z_index: int = 0,
     delay_ms: int = 30,
+    animate: bool = True,
     tool_context: ToolContext | None = None,
 ) -> dict:
     data = DrawFreehandInput.model_validate(
@@ -192,6 +197,7 @@ async def draw_freehand(
                 "opacity": opacity,
                 "z_index": z_index,
                 "delay_ms": delay_ms,
+                "animate": animate,
             },
         }
     )
@@ -213,6 +219,7 @@ async def highlight_region(
     opacity: float = 1.0,
     z_index: int = 0,
     delay_ms: int = 30,
+    animate: bool = True,
     tool_context: ToolContext | None = None,
 ) -> dict:
     """
@@ -237,6 +244,7 @@ async def highlight_region(
                 "opacity": opacity,
                 "z_index": z_index,
                 "delay_ms": delay_ms,
+                "animate": animate,
             },
         }
     )

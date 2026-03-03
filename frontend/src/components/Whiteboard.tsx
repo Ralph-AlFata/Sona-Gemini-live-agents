@@ -9,6 +9,25 @@ interface PointNorm {
   y: number;
 }
 
+interface GraphViewport {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  domainMin: number;
+  domainMax: number;
+  yMin: number;
+  yMax: number;
+  gridLines: number;
+  showBorder: boolean;
+  borderColor: string;
+  borderOpacity: number;
+  axisColor: string;
+  axisWidth: number;
+  gridColor: string;
+  gridOpacity: number;
+}
+
 interface TextItem {
   id: string;
   elementId: string;
@@ -58,6 +77,20 @@ function asString(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
 
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function formatTickValue(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  if (Math.abs(value) < 1e-9) return "0";
+  const roundedInt = Math.round(value);
+  if (Math.abs(value - roundedInt) < 1e-9) {
+    return String(roundedInt);
+  }
+  return Number(value.toFixed(2)).toString();
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
@@ -90,6 +123,40 @@ function toPointNorm(value: unknown): PointNorm | null {
   };
 }
 
+function toGraphViewport(value: unknown): GraphViewport | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const width = asNumber(raw["width"], 0);
+  const height = asNumber(raw["height"], 0);
+  const domainMin = asNumber(raw["domain_min"], -10);
+  const domainMax = asNumber(raw["domain_max"], 10);
+  const yMin = asNumber(raw["y_min"], -10);
+  const yMax = asNumber(raw["y_max"], 10);
+
+  if (width <= 0 || height <= 0 || domainMax <= domainMin || yMax <= yMin) {
+    return null;
+  }
+
+  return {
+    x: Math.max(0, Math.min(1, asNumber(raw["x"], 0.1))),
+    y: Math.max(0, Math.min(1, asNumber(raw["y"], 0.1))),
+    width: Math.max(0.001, Math.min(1, width)),
+    height: Math.max(0.001, Math.min(1, height)),
+    domainMin,
+    domainMax,
+    yMin,
+    yMax,
+    gridLines: Math.max(2, Math.min(30, Math.round(asNumber(raw["grid_lines"], 10)))),
+    showBorder: asBoolean(raw["show_border"], true),
+    borderColor: asString(raw["border_color"], "#444444"),
+    borderOpacity: Math.max(0, Math.min(1, asNumber(raw["border_opacity"], 0.5))),
+    axisColor: asString(raw["axis_color"], "#111111"),
+    axisWidth: Math.max(0.5, asNumber(raw["axis_width"], 2)),
+    gridColor: asString(raw["grid_color"], "#bbbbbb"),
+    gridOpacity: Math.max(0, Math.min(1, asNumber(raw["grid_opacity"], 0.5))),
+  };
+}
+
 export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<KonvaStage | null>(null);
@@ -97,6 +164,7 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
   const [textItems, setTextItems] = useState<TextItem[]>([]);
   const [strokes, setStrokes] = useState<StrokeItem[]>([]);
   const [highlights, setHighlights] = useState<HighlightItem[]>([]);
+  const [graphViewport, setGraphViewport] = useState<GraphViewport | null>(null);
   const [localStroke, setLocalStroke] = useState<PointNorm[]>([]);
   const [toolMode, setToolMode] = useState<"draw" | "delete" | "select">("draw");
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
@@ -324,21 +392,35 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
   useEffect(() => {
     function updateSize() {
       if (containerRef.current) {
-        setDimensions({
-          width: containerRef.current.offsetWidth,
-          height: containerRef.current.offsetHeight,
+        const width = containerRef.current.offsetWidth;
+        const height = containerRef.current.offsetHeight;
+        setDimensions((prev) => {
+          if (prev.width === width && prev.height === height) {
+            return prev;
+          }
+          return { width, height };
         });
       }
     }
 
     updateSize();
+    const observer = new ResizeObserver(updateSize);
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
     window.addEventListener("resize", updateSize);
-    return () => window.removeEventListener("resize", updateSize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateSize);
+    };
   }, []);
 
   useEffect(() => {
+    unmountedRef.current = false;
+    processingRef.current = false;
     return () => {
       unmountedRef.current = true;
+      processingRef.current = false;
       queueRef.current = [];
     };
   }, []);
@@ -352,131 +434,146 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
       if (processingRef.current) return;
       processingRef.current = true;
 
-      while (!unmountedRef.current && queueRef.current.length > 0) {
-        const message = queueRef.current.shift();
-        if (!message) continue;
-        const payload = message.payload;
+      try {
+        while (!unmountedRef.current && queueRef.current.length > 0) {
+          const message = queueRef.current.shift();
+          if (!message) continue;
+          const payload = message.payload;
 
-        if (message.type === "clear") {
-          setTextItems([]);
-          setStrokes([]);
-          setHighlights([]);
-          setLocalStroke([]);
-          setSelectedElementId(null);
-          localPointsRef.current = [];
-          continue;
-        }
-
-        if (message.type === "element_created") {
-          const elementId = asString(payload["element_id"], "");
-          const elementType = asString(payload["element_type"], "");
-          const elementPayload = payload["payload"];
-          if (!elementId || !elementPayload || typeof elementPayload !== "object") continue;
-
-          const typedPayload = elementPayload as Record<string, unknown>;
-          if (elementType === "text") {
-            upsertText(elementId, typedPayload);
-          } else if (elementType === "highlight") {
-            upsertHighlight(elementId, typedPayload);
-          } else if (elementType === "freehand") {
-            await upsertStroke(elementId, typedPayload, "freehand", true);
-          } else if (elementType === "shape") {
-            await upsertStroke(elementId, typedPayload, "shape", true);
-          }
-          continue;
-        }
-
-        if (message.type === "elements_deleted") {
-          const elementIds = Array.isArray(payload["element_ids"])
-            ? payload["element_ids"].map((v) => String(v))
-            : [];
-          const idSet = new Set(elementIds);
-          setStrokes((prev) => prev.filter((stroke) => !idSet.has(stroke.elementId)));
-          setTextItems((prev) => prev.filter((item) => !idSet.has(item.elementId)));
-          setHighlights((prev) => prev.filter((item) => !idSet.has(item.elementId)));
-          // Deselect if the selected element was deleted
-          setSelectedElementId((prev) => (prev && idSet.has(prev) ? null : prev));
-          continue;
-        }
-
-        if (message.type === "elements_transformed") {
-          const elements = Array.isArray(payload["elements"]) ? payload["elements"] : [];
-          for (const item of elements) {
-            if (!item || typeof item !== "object") continue;
-            const elementId = asString((item as Record<string, unknown>)["element_id"], "");
-            const elementType = asString((item as Record<string, unknown>)["element_type"], "");
-            const elementPayload = (item as Record<string, unknown>)["payload"];
-            if (!elementId || !elementPayload || typeof elementPayload !== "object") continue;
-            const typedPayload = elementPayload as Record<string, unknown>;
-
-            if (elementType === "text") {
-              const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
-              upsertText(elementId, {
-                ...typedPayload,
-                color: asString(stylePayload?.stroke_color, "#000"),
-              });
-            } else if (elementType === "highlight") {
-              const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
-              upsertHighlight(elementId, {
-                ...typedPayload,
-                color: asString(stylePayload?.fill_color, "rgba(255,255,0,0.3)"),
-              });
-            } else if (elementType === "freehand" || elementType === "shape") {
-              const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
-              await upsertStroke(
-                elementId,
-                {
-                  ...typedPayload,
-                  color: asString(stylePayload?.stroke_color, "#111"),
-                  stroke_width: asNumber(stylePayload?.stroke_width, 2),
-                  delay_ms: 0,
-                },
-                elementType as "freehand" | "shape",
-                false,
-              );
+          try {
+            if (message.type === "clear") {
+              setTextItems([]);
+              setStrokes([]);
+              setHighlights([]);
+              setGraphViewport(null);
+              setLocalStroke([]);
+              setSelectedElementId(null);
+              localPointsRef.current = [];
+              continue;
             }
-          }
-          continue;
-        }
 
-        if (message.type === "elements_restyled") {
-          const elements = Array.isArray(payload["elements"]) ? payload["elements"] : [];
-          for (const item of elements) {
-            if (!item || typeof item !== "object") continue;
-            const elementId = asString((item as Record<string, unknown>)["element_id"], "");
-            const style = (item as Record<string, unknown>)["style"];
-            if (!elementId || !style || typeof style !== "object") continue;
-            const styleObj = style as Record<string, unknown>;
-            setStrokes((prev) =>
-              prev.map((stroke) =>
-                stroke.elementId === elementId
-                  ? {
-                    ...stroke,
-                    color: asString(styleObj["color"], stroke.color),
-                    strokeWidth: asNumber(styleObj["stroke_width"], stroke.strokeWidth),
-                  }
-                  : stroke,
-              ),
-            );
-            setTextItems((prev) =>
-              prev.map((text) =>
-                text.elementId === elementId
-                  ? { ...text, color: asString(styleObj["color"], text.color) }
-                  : text,
-              ),
-            );
-            setHighlights((prev) =>
-              prev.map((highlight) =>
-                highlight.elementId === elementId
-                  ? { ...highlight, color: asString(styleObj["fill_color"], highlight.color) }
-                  : highlight,
-              ),
-            );
+            if (message.type === "graph_viewport_set") {
+              const viewport = toGraphViewport(payload["viewport"] ?? payload);
+              if (viewport) {
+                setGraphViewport(viewport);
+              }
+              continue;
+            }
+
+            if (message.type === "element_created") {
+              const elementId = asString(payload["element_id"], "");
+              const elementType = asString(payload["element_type"], "");
+              const elementPayload = payload["payload"];
+              if (!elementId || !elementPayload || typeof elementPayload !== "object") continue;
+
+              const typedPayload = elementPayload as Record<string, unknown>;
+              if (elementType === "text") {
+                upsertText(elementId, typedPayload);
+              } else if (elementType === "highlight") {
+                upsertHighlight(elementId, typedPayload);
+              } else if (elementType === "freehand") {
+                await upsertStroke(elementId, typedPayload, "freehand", asBoolean(typedPayload["animate"], true));
+              } else if (elementType === "shape") {
+                await upsertStroke(elementId, typedPayload, "shape", asBoolean(typedPayload["animate"], true));
+              }
+              continue;
+            }
+
+            if (message.type === "elements_deleted") {
+              const elementIds = Array.isArray(payload["element_ids"])
+                ? payload["element_ids"].map((v) => String(v))
+                : [];
+              const idSet = new Set(elementIds);
+              setStrokes((prev) => prev.filter((stroke) => !idSet.has(stroke.elementId)));
+              setTextItems((prev) => prev.filter((item) => !idSet.has(item.elementId)));
+              setHighlights((prev) => prev.filter((item) => !idSet.has(item.elementId)));
+              // Deselect if the selected element was deleted
+              setSelectedElementId((prev) => (prev && idSet.has(prev) ? null : prev));
+              continue;
+            }
+
+            if (message.type === "elements_transformed") {
+              const elements = Array.isArray(payload["elements"]) ? payload["elements"] : [];
+              for (const item of elements) {
+                if (!item || typeof item !== "object") continue;
+                const elementId = asString((item as Record<string, unknown>)["element_id"], "");
+                const elementType = asString((item as Record<string, unknown>)["element_type"], "");
+                const elementPayload = (item as Record<string, unknown>)["payload"];
+                if (!elementId || !elementPayload || typeof elementPayload !== "object") continue;
+                const typedPayload = elementPayload as Record<string, unknown>;
+
+                if (elementType === "text") {
+                  const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
+                  upsertText(elementId, {
+                    ...typedPayload,
+                    color: asString(stylePayload?.stroke_color, "#000"),
+                  });
+                } else if (elementType === "highlight") {
+                  const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
+                  upsertHighlight(elementId, {
+                    ...typedPayload,
+                    color: asString(stylePayload?.fill_color, "rgba(255,255,0,0.3)"),
+                  });
+                } else if (elementType === "freehand" || elementType === "shape") {
+                  const stylePayload = typedPayload["style"] as Record<string, unknown> | undefined;
+                  await upsertStroke(
+                    elementId,
+                    {
+                      ...typedPayload,
+                      color: asString(stylePayload?.stroke_color, "#111"),
+                      stroke_width: asNumber(stylePayload?.stroke_width, 2),
+                      delay_ms: 0,
+                    },
+                    elementType as "freehand" | "shape",
+                    false,
+                  );
+                }
+              }
+              continue;
+            }
+
+            if (message.type === "elements_restyled") {
+              const elements = Array.isArray(payload["elements"]) ? payload["elements"] : [];
+              for (const item of elements) {
+                if (!item || typeof item !== "object") continue;
+                const elementId = asString((item as Record<string, unknown>)["element_id"], "");
+                const style = (item as Record<string, unknown>)["style"];
+                if (!elementId || !style || typeof style !== "object") continue;
+                const styleObj = style as Record<string, unknown>;
+                setStrokes((prev) =>
+                  prev.map((stroke) =>
+                    stroke.elementId === elementId
+                      ? {
+                        ...stroke,
+                        color: asString(styleObj["color"], stroke.color),
+                        strokeWidth: asNumber(styleObj["stroke_width"], stroke.strokeWidth),
+                      }
+                      : stroke,
+                  ),
+                );
+                setTextItems((prev) =>
+                  prev.map((text) =>
+                    text.elementId === elementId
+                      ? { ...text, color: asString(styleObj["color"], text.color) }
+                      : text,
+                  ),
+                );
+                setHighlights((prev) =>
+                  prev.map((highlight) =>
+                    highlight.elementId === elementId
+                      ? { ...highlight, color: asString(styleObj["fill_color"], highlight.color) }
+                      : highlight,
+                  ),
+                );
+              }
+            }
+          } catch (messageError) {
+            console.error("Failed to process drawing message", message.type, messageError);
           }
         }
+      } finally {
+        processingRef.current = false;
       }
-
-      processingRef.current = false;
     }
 
     void processQueue();
@@ -544,8 +641,155 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
         >
           {/* Background */}
           <Layer>
-            <Rect x={0} y={0} width={dimensions.width} height={dimensions.height} fill="#ffffff" />
-          </Layer>
+              <Rect
+                x={0}
+                y={0}
+                width={dimensions.width}
+                height={dimensions.height}
+                fill="#ffffff"
+                listening={false}
+              />
+              {graphViewport && (() => {
+                const graphX = graphViewport.x * dimensions.width;
+                const graphY = graphViewport.y * dimensions.height;
+                const graphW = graphViewport.width * dimensions.width;
+                const graphH = graphViewport.height * dimensions.height;
+                const stepX = graphW / graphViewport.gridLines;
+                const stepY = graphH / graphViewport.gridLines;
+
+                const hasXAxis = graphViewport.yMin <= 0 && graphViewport.yMax >= 0;
+                const hasYAxis = graphViewport.domainMin <= 0 && graphViewport.domainMax >= 0;
+                const xAxisY = hasXAxis
+                  ? graphY + ((graphViewport.yMax - 0) / (graphViewport.yMax - graphViewport.yMin)) * graphH
+                  : graphY + graphH;
+                const yAxisX = hasYAxis
+                  ? graphX + ((0 - graphViewport.domainMin) / (graphViewport.domainMax - graphViewport.domainMin)) * graphW
+                  : graphX;
+
+                const xStepValue = (graphViewport.domainMax - graphViewport.domainMin) / graphViewport.gridLines;
+                const yStepValue = (graphViewport.yMax - graphViewport.yMin) / graphViewport.gridLines;
+                const showEvery = graphViewport.gridLines > 14 ? 2 : 1;
+
+                const xTickLabelY =
+                  xAxisY + 18 < graphY + graphH ? xAxisY + 6 : xAxisY - 18;
+                const yLabelsOnLeft = yAxisX - 38 >= graphX - 2;
+                const yTickLabelX = yLabelsOnLeft ? yAxisX - 36 : yAxisX + 6;
+                const yTickAlign = yLabelsOnLeft ? "right" : "left";
+
+                return (
+                  <>
+                    {Array.from({ length: graphViewport.gridLines - 1 }).map((_, idx) => {
+                      const vx = graphX + (idx + 1) * stepX;
+                      return (
+                        <Line
+                          key={`grid-v-${idx}`}
+                          points={[vx, graphY, vx, graphY + graphH]}
+                          stroke={graphViewport.gridColor}
+                          strokeWidth={1}
+                          opacity={graphViewport.gridOpacity}
+                          listening={false}
+                        />
+                      );
+                    })}
+                    {Array.from({ length: graphViewport.gridLines - 1 }).map((_, idx) => {
+                      const hy = graphY + (idx + 1) * stepY;
+                      return (
+                        <Line
+                          key={`grid-h-${idx}`}
+                          points={[graphX, hy, graphX + graphW, hy]}
+                          stroke={graphViewport.gridColor}
+                          strokeWidth={1}
+                          opacity={graphViewport.gridOpacity}
+                          listening={false}
+                        />
+                      );
+                    })}
+
+                    <Line
+                      points={[graphX, xAxisY, graphX + graphW, xAxisY]}
+                      stroke={graphViewport.axisColor}
+                      strokeWidth={graphViewport.axisWidth}
+                      listening={false}
+                    />
+                    <Line
+                      points={[yAxisX, graphY, yAxisX, graphY + graphH]}
+                      stroke={graphViewport.axisColor}
+                      strokeWidth={graphViewport.axisWidth}
+                      listening={false}
+                    />
+
+                    {Array.from({ length: graphViewport.gridLines + 1 }).map((_, idx) => {
+                      if (idx % showEvery !== 0) return null;
+                      const xPx = graphX + idx * stepX;
+                      const xValue = graphViewport.domainMin + idx * xStepValue;
+                      return (
+                        <Text
+                          key={`x-tick-${idx}`}
+                          x={xPx - 18}
+                          y={xTickLabelY}
+                          width={36}
+                          align="center"
+                          text={formatTickValue(xValue)}
+                          fontSize={11}
+                          fill="#444"
+                          listening={false}
+                        />
+                      );
+                    })}
+                    {Array.from({ length: graphViewport.gridLines + 1 }).map((_, idx) => {
+                      if (idx % showEvery !== 0) return null;
+                      const yPx = graphY + idx * stepY;
+                      const yValue = graphViewport.yMax - idx * yStepValue;
+                      return (
+                        <Text
+                          key={`y-tick-${idx}`}
+                          x={yTickLabelX}
+                          y={yPx - 7}
+                          width={34}
+                          align={yTickAlign}
+                          text={formatTickValue(yValue)}
+                          fontSize={11}
+                          fill="#444"
+                          listening={false}
+                        />
+                      );
+                    })}
+
+                    <Text
+                      x={graphX + graphW - 12}
+                      y={Math.max(graphY + 2, xAxisY - 16)}
+                      text="x"
+                      fontSize={13}
+                      fontStyle="bold"
+                      fill={graphViewport.axisColor}
+                      listening={false}
+                    />
+                    <Text
+                      x={Math.min(graphX + graphW - 12, yAxisX + 6)}
+                      y={graphY + 2}
+                      text="y"
+                      fontSize={13}
+                      fontStyle="bold"
+                      fill={graphViewport.axisColor}
+                      listening={false}
+                    />
+
+                    {graphViewport.showBorder && (
+                      <Rect
+                        x={graphX}
+                        y={graphY}
+                        width={graphW}
+                        height={graphH}
+                        stroke={graphViewport.borderColor}
+                        strokeWidth={1}
+                        opacity={graphViewport.borderOpacity}
+                        listening={false}
+                      />
+                    )}
+                  </>
+                );
+              })()}
+            </Layer>
 
           {/* Highlights */}
           <Layer>
