@@ -30,6 +30,7 @@ class StylePayload(_StrictBase):
     opacity: float = Field(default=1.0, ge=0.0, le=1.0)
     z_index: int = Field(default=0, ge=0, le=10_000)
     delay_ms: int = Field(default=30, ge=0, le=1_000)
+    animate: bool = True
 
 
 class DrawShapePayload(_StrictBase):
@@ -95,6 +96,33 @@ class ClearPayload(_StrictBase):
     mode: Literal["full"] = "full"
 
 
+class GraphViewportPayload(_StrictBase):
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+    width: float = Field(gt=0.0, le=1.0)
+    height: float = Field(gt=0.0, le=1.0)
+    domain_min: float = Field(default=-10.0)
+    domain_max: float = Field(default=10.0)
+    y_min: float = Field(default=-10.0)
+    y_max: float = Field(default=10.0)
+    grid_lines: int = Field(default=10, ge=2, le=30)
+    show_border: bool = True
+    border_color: str = Field(default="#444444", min_length=1, max_length=64)
+    border_opacity: float = Field(default=0.5, ge=0.0, le=1.0)
+    axis_color: str = Field(default="#111111", min_length=1, max_length=64)
+    axis_width: float = Field(default=2.0, gt=0.0, le=64.0)
+    grid_color: str = Field(default="#bbbbbb", min_length=1, max_length=64)
+    grid_opacity: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _validate_ranges(self) -> "GraphViewportPayload":
+        if self.domain_max <= self.domain_min:
+            raise ValueError("domain_max must be greater than domain_min")
+        if self.y_max <= self.y_min:
+            raise ValueError("y_max must be greater than y_min")
+        return self
+
+
 class DeleteElementsPayload(_StrictBase):
     element_ids: list[str] = Field(min_length=1, max_length=500)
 
@@ -157,6 +185,7 @@ DrawOperation = Literal[
     "draw_freehand",
     "highlight_region",
     "clear_canvas",
+    "set_graph_viewport",
     "delete_elements",
     "erase_region",
     "move_elements",
@@ -171,6 +200,7 @@ DrawPayload = (
     | DrawFreehandPayload
     | HighlightPayload
     | ClearPayload
+    | GraphViewportPayload
     | DeleteElementsPayload
     | EraseRegionPayload
     | MoveElementsPayload
@@ -185,6 +215,7 @@ _PAYLOAD_MODEL_MAP: dict[str, type[BaseModel]] = {
     "draw_freehand": DrawFreehandPayload,
     "highlight_region": HighlightPayload,
     "clear_canvas": ClearPayload,
+    "set_graph_viewport": GraphViewportPayload,
     "delete_elements": DeleteElementsPayload,
     "erase_region": EraseRegionPayload,
     "move_elements": MoveElementsPayload,
@@ -221,6 +252,7 @@ DSLMessageType = Literal[
     "elements_deleted",
     "elements_transformed",
     "elements_restyled",
+    "graph_viewport_set",
     "clear",
 ]
 

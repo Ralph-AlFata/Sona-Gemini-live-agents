@@ -18,6 +18,7 @@ class ToolStyle(_StrictModel):
     opacity: float = Field(default=1.0, ge=0.0, le=1.0)
     z_index: int = Field(default=0, ge=0, le=10_000)
     delay_ms: int = Field(default=30, ge=0, le=1_000)
+    animate: bool = True
 
 
 class PointInput(_StrictModel):

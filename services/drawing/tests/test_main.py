@@ -110,3 +110,39 @@ def test_websocket_receives_broadcast_after_draw() -> None:
             assert msg["version"] == "2.0"
             assert msg["session_id"] == "test-room"
             assert msg["type"] == "element_created"
+
+
+def test_websocket_receives_graph_viewport_message() -> None:
+    with TestClient(main.app) as client:
+        with client.websocket_connect("/ws/graph-room") as ws:
+            response = client.post(
+                "/draw",
+                json={
+                    "command_id": "cmd_viewport_ws",
+                    "session_id": "graph-room",
+                    "operation": "set_graph_viewport",
+                    "payload": {
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.8,
+                        "height": 0.8,
+                        "domain_min": -10,
+                        "domain_max": 10,
+                        "y_min": -10,
+                        "y_max": 10,
+                        "grid_lines": 10,
+                        "show_border": True,
+                        "border_color": "#444444",
+                        "border_opacity": 0.5,
+                        "axis_color": "#111111",
+                        "axis_width": 2.0,
+                        "grid_color": "#bbbbbb",
+                        "grid_opacity": 0.5,
+                    },
+                },
+            )
+            assert response.status_code == 202
+            msg = ws.receive_json()
+            assert msg["version"] == "2.0"
+            assert msg["session_id"] == "graph-room"
+            assert msg["type"] == "graph_viewport_set"

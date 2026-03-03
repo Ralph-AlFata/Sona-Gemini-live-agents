@@ -44,6 +44,41 @@ async def test_create_shape_returns_element_created_message_and_id() -> None:
     assert len(response.created_element_ids) == 1
 
 
+async def test_set_graph_viewport_emits_single_viewport_message() -> None:
+    store = InMemoryElementStore()
+    command = DrawCommandRequest(
+        command_id="cmd_viewport",
+        session_id="s1",
+        operation="set_graph_viewport",
+        payload={
+            "x": 0.1,
+            "y": 0.1,
+            "width": 0.8,
+            "height": 0.8,
+            "domain_min": -10,
+            "domain_max": 10,
+            "y_min": -10,
+            "y_max": 10,
+            "grid_lines": 10,
+            "show_border": True,
+            "border_color": "#444444",
+            "border_opacity": 0.5,
+            "axis_color": "#111111",
+            "axis_width": 2.0,
+            "grid_color": "#bbbbbb",
+            "grid_opacity": 0.5,
+        },
+    )
+
+    messages, response = await apply_command(command, store)
+
+    assert len(messages) == 1
+    assert messages[0].type == "graph_viewport_set"
+    assert messages[0].payload["viewport"]["grid_lines"] == 10
+    assert response.applied_count == 1
+    assert response.created_element_ids == []
+
+
 async def test_move_and_resize_transform_element() -> None:
     store = InMemoryElementStore()
     create = DrawCommandRequest(

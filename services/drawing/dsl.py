@@ -16,6 +16,7 @@ from models import (
     DrawShapePayload,
     DrawTextPayload,
     EraseRegionPayload,
+    GraphViewportPayload,
     HighlightPayload,
     MoveElementsPayload,
     ResizeElementsPayload,
@@ -54,6 +55,7 @@ def _style_to_dict(style: StylePayload) -> dict:
         "opacity": style.opacity,
         "z_index": style.z_index,
         "delay_ms": style.delay_ms,
+        "animate": style.animate,
     }
 
 
@@ -107,6 +109,7 @@ def _translate_style_for_frontend(style: dict) -> dict:
         "opacity": style.get("opacity", 1.0),
         "z_index": style.get("z_index", 0),
         "delay_ms": style.get("delay_ms", 30),
+        "animate": bool(style.get("animate", True)),
     }
 
 
@@ -281,6 +284,16 @@ async def apply_command(
         await store.clear_session(command.session_id)
         session_elements.clear()
         messages.append(_create_message(command, "clear", {"mode": "full"}))
+        applied_count = 1
+
+    elif isinstance(payload, GraphViewportPayload):
+        messages.append(
+            _create_message(
+                command,
+                "graph_viewport_set",
+                {"viewport": payload.model_dump(mode="json")},
+            )
+        )
         applied_count = 1
 
     elif isinstance(payload, DrawShapePayload):

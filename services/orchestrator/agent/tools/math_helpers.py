@@ -17,86 +17,50 @@ async def draw_axes_grid(
     width: float = 0.8,
     height: float = 0.8,
     grid_lines: int = 10,
+    domain_min: float = -10.0,
+    domain_max: float = 10.0,
+    y_min: float = -10.0,
+    y_max: float = 10.0,
     tool_context: ToolContext | None = None,
 ) -> dict:
+    if width <= 0 or height <= 0:
+        raise ValueError("width and height must be greater than 0")
+    if domain_max <= domain_min:
+        raise ValueError("domain_max must be greater than domain_min")
+    if y_max <= y_min:
+        raise ValueError("y_max must be greater than y_min")
+
     grid_lines = max(2, min(30, grid_lines))
-    session_id = resolve_session_id(tool_context)
-    client = get_client()
-
-    created: list[str] = []
-
-    # Border box
-    resp = await client.execute(
-        session_id,
-        "draw_shape",
-        {
-            "shape": "rectangle",
-            "points": shape_to_points("rectangle", x, y, width, height),
-            "style": {"stroke_color": "#444", "stroke_width": 1.0, "opacity": 0.5},
+    result = await get_client().execute(
+        session_id=resolve_session_id(tool_context),
+        operation="set_graph_viewport",
+        payload={
+            "x": max(0.0, min(1.0, x)),
+            "y": max(0.0, min(1.0, y)),
+            "width": max(0.001, min(1.0, width)),
+            "height": max(0.001, min(1.0, height)),
+            "domain_min": domain_min,
+            "domain_max": domain_max,
+            "y_min": y_min,
+            "y_max": y_max,
+            "grid_lines": grid_lines,
+            "show_border": True,
+            "border_color": "#444444",
+            "border_opacity": 0.5,
+            "axis_color": "#111111",
+            "axis_width": 2.0,
+            "grid_color": "#bbbbbb",
+            "grid_opacity": 0.5,
         },
     )
-    created.extend(resp.created_element_ids)
-
-    # X axis
-    x_axis_y = y + (height / 2)
-    resp = await client.execute(
-        session_id,
-        "draw_shape",
-        {
-            "shape": "line",
-            "points": shape_to_points("line", x, x_axis_y, width, 0.0),
-            "style": {"stroke_color": "#111", "stroke_width": 2.0},
-        },
-    )
-    created.extend(resp.created_element_ids)
-
-    # Y axis
-    y_axis_x = x + (width / 2)
-    resp = await client.execute(
-        session_id,
-        "draw_shape",
-        {
-            "shape": "line",
-            "points": shape_to_points("line", y_axis_x, y, 0.0, height),
-            "style": {"stroke_color": "#111", "stroke_width": 2.0},
-        },
-    )
-    created.extend(resp.created_element_ids)
-
-    # Grid lines
-    step_x = width / grid_lines
-    step_y = height / grid_lines
-    for i in range(1, grid_lines):
-        gx = x + (i * step_x)
-        gy = y + (i * step_y)
-        resp = await client.execute(
-            session_id,
-            "draw_shape",
-            {
-                "shape": "line",
-                "points": shape_to_points("line", gx, y, 0.0, height),
-                "style": {"stroke_color": "#bbb", "stroke_width": 1.0, "opacity": 0.5},
-            },
-        )
-        created.extend(resp.created_element_ids)
-
-        resp = await client.execute(
-            session_id,
-            "draw_shape",
-            {
-                "shape": "line",
-                "points": shape_to_points("line", x, gy, width, 0.0),
-                "style": {"stroke_color": "#bbb", "stroke_width": 1.0, "opacity": 0.5},
-            },
-        )
-        created.extend(resp.created_element_ids)
 
     return {
         "status": "success",
         "operation": "draw_axes_grid",
-        "applied_count": len(created),
-        "created_element_ids": created,
-        "failed_operations": [],
+        "command_id": result.command_id,
+        "applied_count": result.applied_count,
+        "created_element_ids": result.created_element_ids,
+        "failed_operations": result.failed_operations,
     }
 
 
@@ -228,6 +192,7 @@ async def plot_function_2d(
                 "stroke_width": 2.5,
                 "opacity": 1.0,
                 "delay_ms": 10,
+                "animate": True,
             },
         },
     )

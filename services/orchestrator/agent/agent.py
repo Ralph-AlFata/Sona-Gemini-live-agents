@@ -49,6 +49,8 @@ Tool usage policy:
     polygon:        n+1 points — n vertices + closing point
   For circles or smooth curves prefer draw_freehand with computed circular points.
 - Prefer draw_axes_grid, draw_number_line, and plot_function_2d for graphing tasks.
+- draw_axes_grid sets the graph viewport instantly (grid + axes). Use matching
+  x/y/width/height/domain_min/domain_max/y_min/y_max in plot_function_2d so curves align.
 - Use draw_text for labels and short notes. x,y is the top-left of the text bounding box.
 - highlight_region takes element_ids (IDs returned by prior draw calls) and a highlight_type:
     "marker"       — semi-transparent rectangle (default)
