@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -16,7 +18,7 @@ from google.adk.events.event import Event
 from google.adk.runners import LiveRequestQueue, Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types as genai_types
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from agent import root_agent
 from config import settings
@@ -30,8 +32,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class ChatImage(BaseModel):
+    mime_type: str = Field(min_length=1, max_length=128, pattern=r"^image\/[a-zA-Z0-9.+-]+$")
+    data_base64: str = Field(min_length=1, max_length=20_000_000)
+    filename: str | None = Field(default=None, min_length=1, max_length=256)
+
+
 class ChatRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=10_000)
+    text: str = Field(default="", max_length=10_000)
+    images: list[ChatImage] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def _validate_non_empty(self) -> "ChatRequest":
+        if not self.text.strip() and not self.images:
+            raise ValueError("provide non-empty text and/or at least one image")
+        return self
 
 
 class ChatResponse(BaseModel):
@@ -126,6 +141,35 @@ def _dedupe_keep_order(items: list[str]) -> list[str]:
     return out
 
 
+def _build_user_message_parts(body: ChatRequest) -> tuple[str, list[genai_types.Part]]:
+    user_text = body.text.strip()
+    parts: list[genai_types.Part] = []
+    if user_text:
+        parts.append(genai_types.Part(text=user_text))
+
+    for idx, image in enumerate(body.images):
+        try:
+            raw_bytes = base64.b64decode(image.data_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(f"images[{idx}].data_base64 is not valid base64") from exc
+
+        if not raw_bytes:
+            raise ValueError(f"images[{idx}] is empty")
+        if len(raw_bytes) > 10 * 1024 * 1024:
+            raise ValueError(f"images[{idx}] exceeds 10 MB")
+
+        parts.append(
+            genai_types.Part.from_bytes(
+                data=raw_bytes,
+                mime_type=image.mime_type,
+            )
+        )
+
+    if not parts:
+        raise ValueError("provide non-empty text and/or at least one image")
+    return user_text, parts
+
+
 async def _ensure_adk_session(runtime: LiveRuntime, session_id: str) -> None:
     existing = await runtime.session_service.get_session(
         app_name=settings.app_name,
@@ -143,21 +187,22 @@ async def _ensure_adk_session(runtime: LiveRuntime, session_id: str) -> None:
     )
 
 
-def _mock_chat_response(session_id: str, text: str) -> ChatResponse:
+def _mock_chat_response(session_id: str, text: str, image_count: int = 0) -> ChatResponse:
     lowered = text.lower()
     tool_calls: list[str] = []
 
     if "clear" in lowered:
         tool_calls.append("clear_canvas")
-    if any(token in lowered for token in ("draw", "graph", "plot", "shape", "equation", "line")):
+    if image_count > 0 or any(token in lowered for token in ("draw", "graph", "plot", "shape", "equation", "line")):
         tool_calls.append("draw_text")
 
     return ChatResponse(
         session_id=session_id,
-        user_text=text,
+        user_text=text or "(image input)",
         assistant_text=(
             "Mock mode response. Backend chat wiring is active; "
-            "switch chat_mode=gemini with valid credentials for real model output."
+            "switch chat_mode=gemini with valid credentials for real model output. "
+            f"Received {image_count} image(s)."
         ),
         tool_calls=tool_calls,
     )
@@ -210,12 +255,17 @@ async def health_check() -> dict[str, str]:
 
 @app.post("/chat/{session_id}", response_model=ChatResponse, tags=["chat"])
 async def chat(session_id: str, body: ChatRequest) -> ChatResponse:
-    user_text = body.text.strip()
-    if not user_text:
-        raise HTTPException(status_code=422, detail="text must not be empty")
+    try:
+        user_text, user_parts = _build_user_message_parts(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if not getattr(app.state, "chat_uses_gemini", False):
-        return _mock_chat_response(session_id=session_id, text=user_text)
+        return _mock_chat_response(
+            session_id=session_id,
+            text=user_text,
+            image_count=len(body.images),
+        )
 
     runtime: LiveRuntime | None = getattr(app.state, "live_runtime", None)
     if runtime is None:
@@ -232,7 +282,7 @@ async def chat(session_id: str, body: ChatRequest) -> ChatResponse:
             session_id=session_id,
             new_message=genai_types.Content(
                 role="user",
-                parts=[genai_types.Part(text=user_text)],
+                parts=user_parts,
             ),
             run_config=runtime.chat_run_config,
         ):
@@ -254,7 +304,7 @@ async def chat(session_id: str, body: ChatRequest) -> ChatResponse:
 
     return ChatResponse(
         session_id=session_id,
-        user_text=user_text,
+        user_text=user_text or "(image input)",
         assistant_text=assistant_text,
         tool_calls=_dedupe_keep_order(tool_calls),
     )

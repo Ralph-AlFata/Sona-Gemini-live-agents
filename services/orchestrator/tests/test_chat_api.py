@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from types import SimpleNamespace
 
 import pytest
@@ -23,7 +24,11 @@ class FakeEvent:
 
 
 class FakeRunner:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
     async def run_async(self, **_kwargs):  # type: ignore[no-untyped-def]
+        self.calls.append(_kwargs)
         yield FakeEvent(text="I can help with that.", calls=["draw_text"])
         yield FakeEvent(text="Here is the next step.", calls=["draw_text", "highlight_region"])
 
@@ -101,6 +106,64 @@ def test_chat_empty_text_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
     with TestClient(main.app) as client:
         response = client.post("/chat/s2", json={"text": "   "})
         assert response.status_code == 422
+
+
+def test_chat_image_only_is_accepted_and_sent_as_inline_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_service = FakeSessionService()
+    runtime = FakeRuntime(session_service)
+
+    monkeypatch.setattr(main.settings, "chat_mode", "auto")
+    monkeypatch.setattr(main, "_configure_gemini_environment", lambda: True)
+    monkeypatch.setattr(main, "build_live_runtime", lambda: runtime)
+
+    image_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nunit-test-image").decode("ascii")
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/chat/img-session",
+            json={
+                "text": "",
+                "images": [
+                    {
+                        "mime_type": "image/png",
+                        "data_base64": image_b64,
+                        "filename": "problem.png",
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["user_text"] == "(image input)"
+    assert len(runtime.runner.calls) == 1
+    sent_message = runtime.runner.calls[0]["new_message"]
+    assert sent_message.role == "user"
+    assert len(sent_message.parts) == 1
+    assert sent_message.parts[0].inline_data is not None
+    assert sent_message.parts[0].inline_data.mime_type == "image/png"
+
+
+def test_chat_invalid_image_base64_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main.settings, "chat_mode", "mock")
+    monkeypatch.setattr(main, "_configure_gemini_environment", lambda: False)
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/chat/s3",
+            json={
+                "text": "solve this",
+                "images": [
+                    {
+                        "mime_type": "image/png",
+                        "data_base64": "not-base64",
+                    }
+                ],
+            },
+        )
+    assert response.status_code == 422
 
 
 def test_chat_mode_gemini_fails_startup_without_credentials(
