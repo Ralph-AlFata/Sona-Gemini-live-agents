@@ -5,6 +5,12 @@ export interface ChatResponse {
   tool_calls: string[];
 }
 
+export interface ChatImageInput {
+  mime_type: string;
+  data_base64: string;
+  filename?: string;
+}
+
 function getBaseUrl(): string {
   const fromEnv = import.meta.env.VITE_ORCHESTRATOR_HTTP_BASE;
   if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
@@ -19,6 +25,7 @@ function getBaseUrl(): string {
 export async function sendChatMessage(
   sessionId: string,
   text: string,
+  images: ChatImageInput[] = [],
 ): Promise<ChatResponse> {
   const base = getBaseUrl();
   const response = await fetch(
@@ -28,7 +35,7 @@ export async function sendChatMessage(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, images }),
     },
   );
 
