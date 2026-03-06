@@ -247,6 +247,9 @@ async def test_highlight_marker_creates_element() -> None:
     assert len(messages) == 1
     assert messages[0].type == "element_created"
     assert messages[0].payload["element_type"] == "highlight"
+    highlight_payload = messages[0].payload["payload"]
+    assert highlight_payload["target_element_ids"] == [element_id]
+    assert highlight_payload["padding"] == 0.02
     assert response.applied_count == 1
 
 
@@ -274,6 +277,49 @@ async def test_highlight_circle_creates_freehand() -> None:
     assert len(messages) == 1
     assert messages[0].type == "element_created"
     assert messages[0].payload["element_type"] == "freehand"
+    circle_payload = messages[0].payload["payload"]
+    assert circle_payload["highlight_kind"] == "circle"
+    assert circle_payload["highlight_part"] == "ellipse"
+    assert circle_payload["target_element_ids"] == [element_id]
+    assert circle_payload["padding"] == 0.02
+    assert response.applied_count == 1
+
+
+async def test_highlight_pointer_creates_ellipse_and_arrow_with_metadata() -> None:
+    store = InMemoryElementStore()
+    create = DrawCommandRequest(
+        command_id="cmd_shape_pointer",
+        session_id="s1",
+        operation="draw_shape",
+        payload={"shape": "rectangle", "points": RECT_POINTS, "style": {}},
+    )
+    _, create_resp = await apply_command(create, store)
+    element_id = create_resp.created_element_ids[0]
+
+    highlight = DrawCommandRequest(
+        command_id="cmd_pointer",
+        session_id="s1",
+        operation="highlight_region",
+        payload={
+            "element_ids": [element_id],
+            "highlight_type": "pointer",
+        },
+    )
+    messages, response = await apply_command(highlight, store)
+    assert len(messages) == 2
+    assert all(message.type == "element_created" for message in messages)
+    assert all(message.payload["element_type"] == "freehand" for message in messages)
+    parts = {
+        message.payload["payload"]["highlight_part"]
+        for message in messages
+    }
+    assert parts == {"ellipse", "arrow"}
+    for message in messages:
+        payload = message.payload["payload"]
+        assert payload["highlight_kind"] == "pointer"
+        assert payload["target_element_ids"] == [element_id]
+        assert payload["padding"] == 0.02
+    assert response.applied_count == 2
 
 
 async def test_erase_region_removes_intersecting_elements() -> None:

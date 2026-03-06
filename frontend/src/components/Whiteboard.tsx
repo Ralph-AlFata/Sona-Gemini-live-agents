@@ -9,6 +9,13 @@ interface PointNorm {
   y: number;
 }
 
+interface NormalizedBBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 interface GraphViewport {
   x: number;
   y: number;
@@ -46,6 +53,10 @@ interface StrokeItem {
   strokeWidth: number;
   owner: "user" | "agent";
   elementType: "freehand" | "shape";
+  highlightKind?: "circle" | "pointer";
+  highlightPart?: "ellipse" | "arrow";
+  targetElementIds?: string[];
+  padding?: number;
 }
 
 interface HighlightItem {
@@ -56,6 +67,8 @@ interface HighlightItem {
   width: number;
   height: number;
   color: string;
+  targetElementIds?: string[];
+  padding?: number;
 }
 
 interface WhiteboardProps {
@@ -79,6 +92,21 @@ function asString(value: unknown, fallback: string): string {
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item)).filter((item) => item.length > 0);
+}
+
+function asHighlightKind(value: unknown): "circle" | "pointer" | null {
+  if (value === "circle" || value === "pointer") return value;
+  return null;
+}
+
+function asHighlightPart(value: unknown): "ellipse" | "arrow" | null {
+  if (value === "ellipse" || value === "arrow") return value;
+  return null;
 }
 
 function formatTickValue(value: number): string {
@@ -174,9 +202,167 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
   const unmountedRef = useRef(false);
   const isDrawingRef = useRef(false);
   const localPointsRef = useRef<PointNorm[]>([]);
+  const measurementCanvasRef = useRef<HTMLCanvasElement | null>(null);
   // Select/drag state
   const dragStartRef = useRef<PointNorm | null>(null);
   const isDraggingRef = useRef(false);
+
+  function clamp01(value: number): number {
+    return Math.max(0, Math.min(1, value));
+  }
+
+  function getStrokeBBox(stroke: StrokeItem): NormalizedBBox | null {
+    if (!stroke.points.length) return null;
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const point of stroke.points) {
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
+    return {
+      x: clamp01(minX),
+      y: clamp01(minY),
+      width: Math.max(0.001, clamp01(maxX) - clamp01(minX)),
+      height: Math.max(0.001, clamp01(maxY) - clamp01(minY)),
+    };
+  }
+
+  function getTextBBox(text: TextItem): NormalizedBBox | null {
+    if (dimensions.width <= 0 || dimensions.height <= 0) return null;
+    const canvas = measurementCanvasRef.current ?? document.createElement("canvas");
+    measurementCanvasRef.current = canvas;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+
+    context.font = `${Math.max(1, text.fontSize)}px ${HANDWRITING_FONT}`;
+    const metrics = context.measureText(text.text);
+    const widthPx = Math.max(1, metrics.width);
+    const ascent = metrics.actualBoundingBoxAscent || text.fontSize * 0.8;
+    const descent = metrics.actualBoundingBoxDescent || text.fontSize * 0.2;
+    const heightPx = Math.max(1, ascent + descent);
+
+    return {
+      x: clamp01(text.x),
+      y: clamp01(text.y),
+      width: Math.max(0.001, widthPx / dimensions.width),
+      height: Math.max(0.001, heightPx / dimensions.height),
+    };
+  }
+
+  function getHighlightBBox(highlight: HighlightItem): NormalizedBBox {
+    return {
+      x: clamp01(highlight.x),
+      y: clamp01(highlight.y),
+      width: Math.max(0.001, highlight.width),
+      height: Math.max(0.001, highlight.height),
+    };
+  }
+
+  function getElementBBox(
+    elementId: string,
+    currentHighlights: HighlightItem[],
+  ): NormalizedBBox | null {
+    const text = textItems.find((item) => item.elementId === elementId);
+    if (text) return getTextBBox(text);
+
+    const stroke = strokes.find((item) => item.elementId === elementId);
+    if (stroke) return getStrokeBBox(stroke);
+
+    const highlight = currentHighlights.find((item) => item.elementId === elementId);
+    if (highlight) return getHighlightBBox(highlight);
+
+    return null;
+  }
+
+  function computeUnionBBox(
+    elementIds: string[],
+    padding: number,
+    currentHighlights: HighlightItem[],
+  ): NormalizedBBox | null {
+    const boxes = elementIds
+      .map((elementId) => getElementBBox(elementId, currentHighlights))
+      .filter((box): box is NormalizedBBox => box !== null);
+    if (!boxes.length) return null;
+
+    const x1 = Math.min(...boxes.map((box) => box.x));
+    const y1 = Math.min(...boxes.map((box) => box.y));
+    const x2 = Math.max(...boxes.map((box) => box.x + box.width));
+    const y2 = Math.max(...boxes.map((box) => box.y + box.height));
+    const pad = Math.max(0, Math.min(0.1, padding));
+
+    const nx1 = clamp01(x1 - pad);
+    const ny1 = clamp01(y1 - pad);
+    const nx2 = clamp01(x2 + pad);
+    const ny2 = clamp01(y2 + pad);
+
+    return {
+      x: nx1,
+      y: ny1,
+      width: Math.max(0.001, nx2 - nx1),
+      height: Math.max(0.001, ny2 - ny1),
+    };
+  }
+
+  function pointsApproximatelyEqual(a: PointNorm[], b: PointNorm[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const p1 = a[i];
+      const p2 = b[i];
+      if (!p1 || !p2) return false;
+      if (Math.abs(p1.x - p2.x) > 0.0001 || Math.abs(p1.y - p2.y) > 0.0001) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function buildEllipsePoints(region: NormalizedBBox, segments = 40): PointNorm[] {
+    const cx = region.x + region.width / 2;
+    const cy = region.y + region.height / 2;
+    const rx = region.width / 2;
+    const ry = region.height / 2;
+    const points: PointNorm[] = [];
+    for (let i = 0; i <= segments; i++) {
+      const theta = (2 * Math.PI * i) / segments;
+      points.push({
+        x: clamp01(cx + rx * Math.cos(theta)),
+        y: clamp01(cy + ry * Math.sin(theta)),
+      });
+    }
+    return points;
+  }
+
+  function buildPointerArrowPoints(region: NormalizedBBox): PointNorm[] {
+    const cx = region.x + region.width / 2;
+    const tipY = clamp01(region.y + region.height);
+    const startY = clamp01(region.y + region.height + 0.07);
+    if (startY < 1.0 && startY > tipY) {
+      return [{ x: cx, y: startY }, { x: cx, y: tipY }];
+    }
+    return [];
+  }
+
+  function resolveDynamicHighlightPoints(
+    highlightKind: "circle" | "pointer",
+    highlightPart: "ellipse" | "arrow" | null,
+    targetElementIds: string[],
+    padding: number,
+    currentHighlights: HighlightItem[],
+  ): PointNorm[] | null {
+    const union = computeUnionBBox(targetElementIds, padding, currentHighlights);
+    if (!union) return null;
+    if (highlightKind === "circle") {
+      return buildEllipsePoints(union);
+    }
+    if (highlightPart === "arrow") {
+      return buildPointerArrowPoints(union);
+    }
+    return buildEllipsePoints(union);
+  }
 
   function getNormalizedPointer(): PointNorm | null {
     const stage = stageRef.current;
@@ -317,6 +503,8 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
   }
 
   function upsertHighlight(elementId: string, payload: Record<string, unknown>): void {
+    const targetElementIds = asStringArray(payload["target_element_ids"]);
+    const padding = asNumber(payload["padding"], 0.02);
     const next: HighlightItem = {
       id: `highlight-${elementId}`,
       elementId,
@@ -325,9 +513,17 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
       width: asNumber(payload["width"], 0),
       height: asNumber(payload["height"], 0),
       color: asString(payload["fill_color"], asString(payload["color"], "rgba(255,255,0,0.3)")),
+      targetElementIds: targetElementIds.length ? targetElementIds : undefined,
+      padding: targetElementIds.length ? padding : undefined,
     };
     setHighlights((prev) => {
       const without = prev.filter((item) => item.elementId !== elementId);
+      if (next.targetElementIds && next.targetElementIds.length > 0) {
+        const union = computeUnionBBox(next.targetElementIds, next.padding ?? 0.02, without);
+        if (union) {
+          return [...without, { ...next, ...union }];
+        }
+      }
       return [...without, next];
     });
   }
@@ -343,12 +539,38 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
     elementType: "freehand" | "shape",
     animate: boolean,
   ): Promise<void> {
+    const targetElementIds = asStringArray(payload["target_element_ids"]);
+    const highlightKind = asHighlightKind(payload["highlight_kind"]);
+    const highlightPart = asHighlightPart(payload["highlight_part"]);
+    const padding = asNumber(payload["padding"], 0.02);
+    const strokeHighlightMeta =
+      elementType === "freehand" && highlightKind && targetElementIds.length > 0
+        ? {
+          highlightKind,
+          highlightPart: (highlightPart ?? "ellipse") as "ellipse" | "arrow",
+          targetElementIds,
+          padding,
+        }
+        : {};
+
     const pointsRaw = payload["points"];
     if (!Array.isArray(pointsRaw)) return;
 
-    const points = pointsRaw
+    let points = pointsRaw
       .map((point) => toPointNorm(point))
       .filter((point): point is PointNorm => point !== null);
+    if (highlightKind && targetElementIds.length > 0) {
+      const dynamicPoints = resolveDynamicHighlightPoints(
+        highlightKind,
+        highlightPart,
+        targetElementIds,
+        padding,
+        highlights,
+      );
+      if (dynamicPoints && dynamicPoints.length >= 2) {
+        points = dynamicPoints;
+      }
+    }
     if (points.length < 2) return;
 
     const color = asString(payload["color"], "#111");
@@ -360,7 +582,16 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
         const without = prev.filter((stroke) => stroke.elementId !== elementId);
         return [
           ...without,
-          { id: strokeId, elementId, points, color, strokeWidth, owner: "agent", elementType },
+          {
+            id: strokeId,
+            elementId,
+            points,
+            color,
+            strokeWidth,
+            owner: "agent",
+            elementType,
+            ...strokeHighlightMeta,
+          },
         ];
       });
       return;
@@ -377,7 +608,16 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
       const without = prev.filter((stroke) => stroke.elementId !== elementId);
       return [
         ...without,
-        { id: strokeId, elementId, points: [firstPoint], color, strokeWidth, owner: "agent", elementType },
+        {
+          id: strokeId,
+          elementId,
+          points: [firstPoint],
+          color,
+          strokeWidth,
+          owner: "agent",
+          elementType,
+          ...strokeHighlightMeta,
+        },
       ];
     });
 
@@ -424,6 +664,67 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
       queueRef.current = [];
     };
   }, []);
+
+  useEffect(() => {
+    setHighlights((prev) => {
+      let changed = false;
+      const next = prev.map((highlight) => {
+        if (!highlight.targetElementIds || highlight.targetElementIds.length === 0) {
+          return highlight;
+        }
+        const union = computeUnionBBox(
+          highlight.targetElementIds,
+          highlight.padding ?? 0.02,
+          prev,
+        );
+        if (!union) {
+          return highlight;
+        }
+        const isSame =
+          Math.abs(union.x - highlight.x) < 0.0001 &&
+          Math.abs(union.y - highlight.y) < 0.0001 &&
+          Math.abs(union.width - highlight.width) < 0.0001 &&
+          Math.abs(union.height - highlight.height) < 0.0001;
+        if (isSame) {
+          return highlight;
+        }
+        changed = true;
+        return { ...highlight, ...union };
+      });
+      return changed ? next : prev;
+    });
+  }, [textItems, strokes, dimensions.width, dimensions.height]);
+
+  useEffect(() => {
+    setStrokes((prev) => {
+      let changed = false;
+      const next = prev.map((stroke) => {
+        if (
+          !stroke.highlightKind ||
+          !stroke.targetElementIds ||
+          stroke.targetElementIds.length === 0
+        ) {
+          return stroke;
+        }
+        const dynamicPoints = resolveDynamicHighlightPoints(
+          stroke.highlightKind,
+          stroke.highlightPart ?? "ellipse",
+          stroke.targetElementIds,
+          stroke.padding ?? 0.02,
+          highlights,
+        );
+        if (!dynamicPoints || dynamicPoints.length < 2) {
+          return stroke;
+        }
+        if (pointsApproximatelyEqual(dynamicPoints, stroke.points)) {
+          return stroke;
+        }
+        changed = true;
+        return { ...stroke, points: dynamicPoints };
+      });
+      return changed ? next : prev;
+    });
+  }, [textItems, strokes, highlights, dimensions.width, dimensions.height]);
 
   useEffect(() => {
     if (messages.length <= processedCountRef.current) return;
