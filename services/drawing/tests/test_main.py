@@ -33,7 +33,7 @@ def test_draw_create_and_edit_flow() -> None:
                 },
             },
         )
-        assert create.status_code == 202
+        assert create.status_code == 200
         body = create.json()
         assert body["applied_count"] == 1
         element_id = body["created_element_ids"][0]
@@ -47,7 +47,7 @@ def test_draw_create_and_edit_flow() -> None:
                 "payload": {"element_ids": [element_id], "dx": 0.1, "dy": 0.0},
             },
         )
-        assert move.status_code == 202
+        assert move.status_code == 200
         assert move.json()["applied_count"] == 1
 
         update_points = client.post(
@@ -69,7 +69,7 @@ def test_draw_create_and_edit_flow() -> None:
                 },
             },
         )
-        assert update_points.status_code == 202
+        assert update_points.status_code == 200
         assert update_points.json()["applied_count"] == 1
 
         style = client.post(
@@ -81,14 +81,14 @@ def test_draw_create_and_edit_flow() -> None:
                 "payload": {"element_ids": [element_id], "stroke_color": "#00f"},
             },
         )
-        assert style.status_code == 202
+        assert style.status_code == 200
         assert style.json()["applied_count"] == 1
 
 
-def test_draw_clear_returns_202() -> None:
+def test_draw_clear_returns_200() -> None:
     with TestClient(main.app) as client:
         response = client.post("/draw/clear", json={"session_id": "clear-s1"})
-        assert response.status_code == 202
+        assert response.status_code == 200
         assert response.json()["operation"] == "clear_canvas"
 
 
@@ -127,7 +127,7 @@ def test_websocket_receives_broadcast_after_draw() -> None:
                     },
                 },
             )
-            assert response.status_code == 202
+            assert response.status_code == 200
             msg = ws.receive_json()
             assert msg["version"] == "2.0"
             assert msg["session_id"] == "test-room"
@@ -163,7 +163,7 @@ def test_websocket_receives_graph_viewport_message() -> None:
                     },
                 },
             )
-            assert response.status_code == 202
+            assert response.status_code == 200
             msg = ws.receive_json()
             assert msg["version"] == "2.0"
             assert msg["session_id"] == "graph-room"

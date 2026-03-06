@@ -84,7 +84,6 @@ def _build_shape_element(payload: DrawShapePayload) -> tuple[dict, BBox]:
     }
     return draw_payload, BBox(min_x, min_y, max(max_x - min_x, 0.001), max(max_y - min_y, 0.001))
 
-# TODO: Check if this is the potential issue related to the highlight going too much out of bounds when working with equations
 def _build_text_element(payload: DrawTextPayload) -> tuple[dict, BBox]:
     approx_width = min(0.8, 0.012 * len(payload.text) * (payload.font_size / 24))
     approx_height = min(0.25, 0.03 * (payload.font_size / 24))
@@ -394,7 +393,6 @@ async def apply_command(
                 },
             )
         )
-# TODO: Check if the problem related to the highlight going out of bounds is here. It could potentially be because of the padding size
     elif isinstance(payload, HighlightPayload):
         # Look up target elements and compute their union bounding box.
         target_elements = [
@@ -407,6 +405,7 @@ async def apply_command(
 
         if target_elements:
             pad = payload.padding
+            target_ids = [element.element_id for element in target_elements]
             xs_lo = [e.bbox.x for e in target_elements]
             ys_lo = [e.bbox.y for e in target_elements]
             xs_hi = [e.bbox.x + e.bbox.width for e in target_elements]
@@ -435,7 +434,15 @@ async def apply_command(
 
             elif payload.highlight_type == "marker":
                 eid = _next_element_id()
-                h_payload = {"x": ux, "y": uy, "width": uw, "height": uh, "style": style_dict}
+                h_payload = {
+                    "x": ux,
+                    "y": uy,
+                    "width": uw,
+                    "height": uh,
+                    "style": style_dict,
+                    "target_element_ids": target_ids,
+                    "padding": pad,
+                }
                 el = StoredElement(
                     element_id=eid,
                     element_type="highlight",
@@ -451,6 +458,8 @@ async def apply_command(
                     "element_type": "highlight",
                     "payload": {
                         "x": ux, "y": uy, "width": uw, "height": uh,
+                        "target_element_ids": target_ids,
+                        "padding": pad,
                         **_translate_style_for_frontend(style_dict),
                     },
                 }))
@@ -463,7 +472,14 @@ async def apply_command(
                 el = StoredElement(
                     element_id=eid,
                     element_type="freehand",
-                    payload={"points": pts, "style": style_dict},
+                    payload={
+                        "points": pts,
+                        "style": style_dict,
+                        "highlight_kind": "circle",
+                        "highlight_part": "ellipse",
+                        "target_element_ids": target_ids,
+                        "padding": pad,
+                    },
                     bbox=BBox(ux, uy, uw, uh),
                 )
                 session_elements[eid] = el
@@ -473,7 +489,14 @@ async def apply_command(
                 messages.append(_create_message(command, "element_created", {
                     "element_id": eid,
                     "element_type": "freehand",
-                    "payload": {"points": pts, **_translate_style_for_frontend(style_dict)},
+                    "payload": {
+                        "points": pts,
+                        "highlight_kind": "circle",
+                        "highlight_part": "ellipse",
+                        "target_element_ids": target_ids,
+                        "padding": pad,
+                        **_translate_style_for_frontend(style_dict),
+                    },
                 }))
 
             elif payload.highlight_type == "pointer":
@@ -485,7 +508,14 @@ async def apply_command(
                 el1 = StoredElement(
                     element_id=eid1,
                     element_type="freehand",
-                    payload={"points": ellipse_pts, "style": style_dict},
+                    payload={
+                        "points": ellipse_pts,
+                        "style": style_dict,
+                        "highlight_kind": "pointer",
+                        "highlight_part": "ellipse",
+                        "target_element_ids": target_ids,
+                        "padding": pad,
+                    },
                     bbox=BBox(ux, uy, uw, uh),
                 )
                 session_elements[eid1] = el1
@@ -494,7 +524,14 @@ async def apply_command(
                 messages.append(_create_message(command, "element_created", {
                     "element_id": eid1,
                     "element_type": "freehand",
-                    "payload": {"points": ellipse_pts, **_translate_style_for_frontend(style_dict)},
+                    "payload": {
+                        "points": ellipse_pts,
+                        "highlight_kind": "pointer",
+                        "highlight_part": "ellipse",
+                        "target_element_ids": target_ids,
+                        "padding": pad,
+                        **_translate_style_for_frontend(style_dict),
+                    },
                 }))
 
                 # Arrow: vertical stem from below the ellipse up to its bottom edge.
@@ -509,7 +546,14 @@ async def apply_command(
                     el2 = StoredElement(
                         element_id=eid2,
                         element_type="freehand",
-                        payload={"points": arrow_pts, "style": style_dict},
+                        payload={
+                            "points": arrow_pts,
+                            "style": style_dict,
+                            "highlight_kind": "pointer",
+                            "highlight_part": "arrow",
+                            "target_element_ids": target_ids,
+                            "padding": pad,
+                        },
                         bbox=BBox(cx, arrow_tip_y, 0.001, arrow_start_y - arrow_tip_y),
                     )
                     session_elements[eid2] = el2
@@ -518,7 +562,14 @@ async def apply_command(
                     messages.append(_create_message(command, "element_created", {
                         "element_id": eid2,
                         "element_type": "freehand",
-                        "payload": {"points": arrow_pts, **_translate_style_for_frontend(style_dict)},
+                        "payload": {
+                            "points": arrow_pts,
+                            "highlight_kind": "pointer",
+                            "highlight_part": "arrow",
+                            "target_element_ids": target_ids,
+                            "padding": pad,
+                            **_translate_style_for_frontend(style_dict),
+                        },
                     }))
 
                 applied_count = len(created_element_ids)
