@@ -35,8 +35,11 @@ def _next_element_id() -> str:
     return f"el_{uuid4().hex[:12]}"
 
 
-def _clamp(value: float) -> float:
-    return max(0.0, min(1.0, value))
+def _clamp(value: float, upper: float = 1.0) -> float:
+    return max(0.0, min(upper, value))
+
+
+_Y_MAX = 2.0  # width-uniform coords: y can exceed 1.0 on non-square screens
 
 
 def _bbox_intersects(a: BBox, b: BBox) -> bool:
@@ -139,7 +142,7 @@ def _move_bbox(bbox: BBox, dx: float, dy: float) -> BBox:
     The box dimensions are preserved; only the origin shifts.
     Used by _move_payload to keep the stored BBox in sync after a move.
     """
-    return BBox(x=_clamp(bbox.x + dx), y=_clamp(bbox.y + dy), width=bbox.width, height=bbox.height)
+    return BBox(x=_clamp(bbox.x + dx), y=_clamp(bbox.y + dy, _Y_MAX), width=bbox.width, height=bbox.height)
 
 
 def _resize_bbox(bbox: BBox, sx: float, sy: float) -> BBox:
@@ -151,10 +154,10 @@ def _resize_bbox(bbox: BBox, sx: float, sy: float) -> BBox:
     cx = bbox.x + (bbox.width / 2)
     cy = bbox.y + (bbox.height / 2)
     nw = min(1.0, bbox.width * sx)
-    nh = min(1.0, bbox.height * sy)
+    nh = min(_Y_MAX, bbox.height * sy)
     return BBox(
         x=_clamp(cx - (nw / 2)),
-        y=_clamp(cy - (nh / 2)),
+        y=_clamp(cy - (nh / 2), _Y_MAX),
         width=nw,
         height=nh,
     )
@@ -164,7 +167,7 @@ def _move_payload(element: StoredElement, dx: float, dy: float) -> None:
     if element.element_type == "freehand" or "points" in element.payload:
         points = []
         for point in element.payload["points"]:
-            points.append({"x": _clamp(float(point["x"]) + dx), "y": _clamp(float(point["y"]) + dy)})
+            points.append({"x": _clamp(float(point["x"]) + dx), "y": _clamp(float(point["y"]) + dy, _Y_MAX)})
         element.payload["points"] = points
         xs = [point["x"] for point in points]
         ys = [point["y"] for point in points]
@@ -173,7 +176,7 @@ def _move_payload(element: StoredElement, dx: float, dy: float) -> None:
 
     if {"x", "y"}.issubset(element.payload):
         element.payload["x"] = _clamp(float(element.payload["x"]) + dx)
-        element.payload["y"] = _clamp(float(element.payload["y"]) + dy)
+        element.payload["y"] = _clamp(float(element.payload["y"]) + dy, _Y_MAX)
 
     element.bbox = _move_bbox(element.bbox, dx, dy)
 
@@ -193,7 +196,7 @@ def _resize_payload(element: StoredElement, scale_x: float, scale_y: float) -> N
             points.append(
                 {
                     "x": _clamp(new_bbox.x + (rel_x * new_bbox.width)),
-                    "y": _clamp(new_bbox.y + (rel_y * new_bbox.height)),
+                    "y": _clamp(new_bbox.y + (rel_y * new_bbox.height), _Y_MAX),
                 }
             )
         element.payload["points"] = points
@@ -262,7 +265,7 @@ def _ellipse_points(cx: float, cy: float, rx: float, ry: float, segments: int = 
         theta = 2 * math.pi * i / segments
         points.append({
             "x": _clamp(cx + rx * math.cos(theta)),
-            "y": _clamp(cy + ry * math.sin(theta)),
+            "y": _clamp(cy + ry * math.sin(theta), _Y_MAX),
         })
     return points
 
@@ -411,9 +414,9 @@ async def apply_command(
             xs_hi = [e.bbox.x + e.bbox.width for e in target_elements]
             ys_hi = [e.bbox.y + e.bbox.height for e in target_elements]
             ux = _clamp(min(xs_lo) - pad)
-            uy = _clamp(min(ys_lo) - pad)
+            uy = _clamp(min(ys_lo) - pad, _Y_MAX)
             ux2 = _clamp(max(xs_hi) + pad)
-            uy2 = _clamp(max(ys_hi) + pad)
+            uy2 = _clamp(max(ys_hi) + pad, _Y_MAX)
             uw = max(0.001, ux2 - ux)
             uh = max(0.001, uy2 - uy)
             style_dict = _style_to_dict(payload.style)
@@ -535,9 +538,9 @@ async def apply_command(
                 }))
 
                 # Arrow: vertical stem from below the ellipse up to its bottom edge.
-                arrow_tip_y = _clamp(uy2)
-                arrow_start_y = _clamp(uy2 + 0.07)
-                if arrow_start_y < 1.0 and arrow_start_y > arrow_tip_y:
+                arrow_tip_y = _clamp(uy2, _Y_MAX)
+                arrow_start_y = _clamp(uy2 + 0.07, _Y_MAX)
+                if arrow_start_y < _Y_MAX and arrow_start_y > arrow_tip_y:
                     arrow_pts = [
                         {"x": cx, "y": arrow_start_y},
                         {"x": cx, "y": arrow_tip_y},

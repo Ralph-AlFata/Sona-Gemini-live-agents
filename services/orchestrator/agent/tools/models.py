@@ -23,7 +23,7 @@ class ToolStyle(_StrictModel):
 
 class PointInput(_StrictModel):
     x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=2.0)  # width-uniform coords: y range = height/width
 
 
 class DrawShapeInput(_StrictModel):
@@ -39,6 +39,7 @@ class DrawShapeInput(_StrictModel):
     shape: Literal[
         "rectangle",
         "ellipse",
+        "circle",
         "line",
         "triangle",
         "right_triangle",
@@ -52,7 +53,7 @@ class DrawShapeInput(_StrictModel):
 class DrawTextInput(_StrictModel):
     text: str = Field(min_length=1, max_length=2_000)
     x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=2.0)
     font_size: int = Field(default=24, ge=8, le=256)
     style: ToolStyle = Field(default_factory=ToolStyle)
 
@@ -87,15 +88,15 @@ class DeleteElementsInput(_StrictModel):
 
 class EraseRegionInput(_StrictModel):
     x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=2.0)
     width: float = Field(gt=0.0, le=1.0)
-    height: float = Field(gt=0.0, le=1.0)
+    height: float = Field(gt=0.0, le=2.0)
 
 
 class MoveElementsInput(_StrictModel):
     element_ids: list[str] = Field(min_length=1, max_length=500)
     dx: float = Field(ge=-1.0, le=1.0)
-    dy: float = Field(ge=-1.0, le=1.0)
+    dy: float = Field(ge=-2.0, le=2.0)
 
 
 class ResizeElementsInput(_StrictModel):
