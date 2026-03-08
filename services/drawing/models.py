@@ -20,7 +20,7 @@ class _StrictBase(BaseModel):
 
 class Point(_StrictBase):
     x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=2.0)  # width-uniform coords: y range = height/width
 
 
 class StylePayload(_StrictBase):
@@ -44,7 +44,7 @@ class DrawShapePayload(_StrictBase):
     """
 
     shape: Literal[
-        "rectangle", "ellipse", "line", "triangle", "right_triangle",
+        "rectangle", "ellipse", "circle", "line", "triangle", "right_triangle",
         "polygon", "square",
     ]
     points: list[Point] = Field(min_length=2)
@@ -61,7 +61,7 @@ class DrawTextPayload(_StrictBase):
 
     text: str = Field(min_length=1, max_length=2_000)
     x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=2.0)
     font_size: int = Field(default=24, ge=8, le=256)
     style: StylePayload = Field(default_factory=StylePayload)
 
@@ -98,9 +98,9 @@ class ClearPayload(_StrictBase):
 
 class GraphViewportPayload(_StrictBase):
     x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=2.0)
     width: float = Field(gt=0.0, le=1.0)
-    height: float = Field(gt=0.0, le=1.0)
+    height: float = Field(gt=0.0, le=2.0)
     domain_min: float = Field(default=-10.0)
     domain_max: float = Field(default=10.0)
     y_min: float = Field(default=-10.0)
@@ -136,9 +136,9 @@ class EraseRegionPayload(_StrictBase):
     """
 
     x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=2.0)
     width: float = Field(gt=0.0, le=1.0)
-    height: float = Field(gt=0.0, le=1.0)
+    height: float = Field(gt=0.0, le=2.0)
 
 class MoveElementsPayload(_StrictBase):
     """
@@ -150,7 +150,7 @@ class MoveElementsPayload(_StrictBase):
 
     element_ids: list[str] = Field(min_length=1, max_length=500)
     dx: float = Field(ge=-1.0, le=1.0)
-    dy: float = Field(ge=-1.0, le=1.0)
+    dy: float = Field(ge=-2.0, le=2.0)
 
 
 class ResizeElementsPayload(_StrictBase):

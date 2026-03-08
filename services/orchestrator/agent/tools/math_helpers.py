@@ -13,9 +13,9 @@ from agent.tools.core import shape_to_points
 
 async def draw_axes_grid(
     x: float = 0.1,
-    y: float = 0.1,
+    y: float = 0.05,
     width: float = 0.8,
-    height: float = 0.8,
+    height: float = 0.45,
     grid_lines: int = 10,
     domain_min: float = -10.0,
     domain_max: float = 10.0,
@@ -36,9 +36,9 @@ async def draw_axes_grid(
         operation="set_graph_viewport",
         payload={
             "x": max(0.0, min(1.0, x)),
-            "y": max(0.0, min(1.0, y)),
+            "y": max(0.0, min(2.0, y)),
             "width": max(0.001, min(1.0, width)),
-            "height": max(0.001, min(1.0, height)),
+            "height": max(0.001, min(2.0, height)),
             "domain_min": domain_min,
             "domain_max": domain_max,
             "y_min": y_min,
@@ -131,9 +131,9 @@ async def draw_number_line(
 async def plot_function_2d(
     expression: str,
     x: float = 0.1,
-    y: float = 0.1,
+    y: float = 0.05,
     width: float = 0.8,
-    height: float = 0.8,
+    height: float = 0.45,
     domain_min: float = -10.0,
     domain_max: float = 10.0,
     y_min: float = -10.0,
@@ -169,7 +169,7 @@ async def plot_function_2d(
         points.append(
             {
                 "x": max(0.0, min(1.0, nx)),
-                "y": max(0.0, min(1.0, ny)),
+                "y": max(0.0, min(2.0, ny)),
             }
         )
 

@@ -53,6 +53,21 @@ def shape_to_points(
             {"x": x, "y": y + height},
         ]
 
+    if shape == "circle":
+        # Circle: equal radius in both axes (width-uniform coords guarantee roundness)
+        cx = x + width / 2
+        cy = y + height / 2
+        r = min(width, height) / 2
+        segments = 48
+        points = []
+        for i in range(segments + 1):
+            t = 2 * math.pi * i / segments
+            points.append({
+                "x": max(0.0, min(1.0, cx + r * math.cos(t))),
+                "y": max(0.0, min(2.0, cy + r * math.sin(t))),
+            })
+        return points
+
     if shape == "ellipse":
         cx = x + width / 2
         cy = y + height / 2
@@ -64,7 +79,7 @@ def shape_to_points(
             t = 2 * math.pi * i / segments
             points.append({
                 "x": max(0.0, min(1.0, cx + rx * math.cos(t))),
-                "y": max(0.0, min(1.0, cy + ry * math.sin(t))),
+                "y": max(0.0, min(2.0, cy + ry * math.sin(t))),
             })
         return points
 
@@ -79,7 +94,7 @@ def shape_to_points(
             t = 2 * math.pi * i / n - math.pi / 2
             points.append({
                 "x": max(0.0, min(1.0, cx + rx * math.cos(t))),
-                "y": max(0.0, min(1.0, cy + ry * math.sin(t))),
+                "y": max(0.0, min(2.0, cy + ry * math.sin(t))),
             })
         return points
 

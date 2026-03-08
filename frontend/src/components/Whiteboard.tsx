@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Stage, Layer, Rect, Text, Line } from "react-konva";
+import { Stage, Layer, Rect, Text, Line, Shape } from "react-konva";
 import type { Stage as KonvaStage } from "konva/lib/Stage";
 import type { DSLMessageRaw } from "../services/drawingSocket";
 import { postDraw } from "../services/drawingService";
+import getStroke from "perfect-freehand";
 
 interface PointNorm {
   x: number;
@@ -57,6 +58,7 @@ interface StrokeItem {
   highlightPart?: "ellipse" | "arrow";
   targetElementIds?: string[];
   padding?: number;
+  svgPath?: string;
 }
 
 interface HighlightItem {
@@ -140,6 +142,105 @@ function interpolateSegment(from: PointNorm, to: PointNorm): PointNorm[] {
   return points;
 }
 
+/**
+ * Centripetal Catmull-Rom spline (α=0.5).
+ * Guarantees no cusps or self-intersections at tight corners.
+ */
+function catmullRomSpline(controlPoints: PointNorm[]): PointNorm[] {
+  if (controlPoints.length < 2) return [...controlPoints];
+  if (controlPoints.length === 2) {
+    return interpolateSegment(controlPoints[0]!, controlPoints[1]!);
+  }
+
+  const result: PointNorm[] = [controlPoints[0]!];
+
+  for (let i = 0; i < controlPoints.length - 1; i++) {
+    const p0 = controlPoints[Math.max(i - 1, 0)]!;
+    const p1 = controlPoints[i]!;
+    const p2 = controlPoints[i + 1]!;
+    const p3 = controlPoints[Math.min(i + 2, controlPoints.length - 1)]!;
+
+    // Centripetal knot intervals: t_i = |P_i - P_{i-1}|^0.5
+    const d01 = Math.sqrt(Math.hypot(p1.x - p0.x, p1.y - p0.y)) || 1e-6;
+    const d12 = Math.sqrt(Math.hypot(p2.x - p1.x, p2.y - p1.y)) || 1e-6;
+    const d23 = Math.sqrt(Math.hypot(p3.x - p2.x, p3.y - p2.y)) || 1e-6;
+
+    const segLen = d12 * d12;
+    const steps = Math.max(2, Math.ceil(Math.sqrt(segLen) * SEGMENT_SAMPLES_PER_UNIT));
+
+    // Centripetal tangents scaled by segment length (Hermite form)
+    const s1x = ((p2.x - p0.x) / (d01 + d12)) * d12;
+    const s1y = ((p2.y - p0.y) / (d01 + d12)) * d12;
+    const s2x = ((p3.x - p1.x) / (d12 + d23)) * d12;
+    const s2y = ((p3.y - p1.y) / (d12 + d23)) * d12;
+
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps;
+      const t2 = t * t;
+      const t3 = t2 * t;
+
+      const h00 = 2 * t3 - 3 * t2 + 1;
+      const h10 = t3 - 2 * t2 + t;
+      const h01 = -2 * t3 + 3 * t2;
+      const h11 = t3 - t2;
+
+      const x = h00 * p1.x + h10 * s1x + h01 * p2.x + h11 * s2x;
+      const y = h00 * p1.y + h10 * s1y + h01 * p2.y + h11 * s2y;
+
+      result.push({ x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) });
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Convert perfect-freehand outline points to an SVG path string.
+ * Uses quadratic Bezier curves between midpoints for smooth rendering.
+ */
+function getSvgPathFromStroke(points: number[][]): string {
+  if (points.length < 2) return "";
+  const first = points[0]!;
+  let d = `M ${first[0]} ${first[1]} Q`;
+  for (let i = 0; i < points.length; i++) {
+    const p0 = points[i]!;
+    const p1 = points[(i + 1) % points.length]!;
+    d += ` ${p0[0]} ${p0[1]} ${(p0[0]! + p1[0]!) / 2} ${(p0[1]! + p1[1]!) / 2}`;
+  }
+  d += " Z";
+  return d;
+}
+
+/**
+ * Compute the perfect-freehand SVG path for a set of pixel-space points.
+ * Simulates pressure from point spacing for natural variable-width strokes.
+ */
+function computeFreehandPath(
+  points: PointNorm[],
+  unitPx: number,
+  baseSize: number,
+): string {
+  if (points.length < 2) return "";
+
+  // Convert to pixel space — both axes use width as the unit (width-uniform coords)
+  const pixelPoints: [number, number][] = points.map((p) => [
+    p.x * unitPx,
+    p.y * unitPx,
+  ]);
+
+  const outlinePoints = getStroke(pixelPoints, {
+    size: baseSize,
+    thinning: 0.5,
+    smoothing: 0.5,
+    streamline: 0.3,
+    simulatePressure: true,
+    start: { taper: baseSize * 2, cap: true },
+    end: { taper: baseSize * 1.5, cap: true },
+  });
+
+  return getSvgPathFromStroke(outlinePoints);
+}
+
 function toPointNorm(value: unknown): PointNorm | null {
   if (!value || typeof value !== "object") return null;
   const maybeX = asNumber((value as Record<string, unknown>)["x"], NaN);
@@ -147,7 +248,7 @@ function toPointNorm(value: unknown): PointNorm | null {
   if (!Number.isFinite(maybeX) || !Number.isFinite(maybeY)) return null;
   return {
     x: Math.max(0, Math.min(1, maybeX)),
-    y: Math.max(0, Math.min(1, maybeY)),
+    y: Math.max(0, maybeY),
   };
 }
 
@@ -249,7 +350,7 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
       x: clamp01(text.x),
       y: clamp01(text.y),
       width: Math.max(0.001, widthPx / dimensions.width),
-      height: Math.max(0.001, heightPx / dimensions.height),
+      height: Math.max(0.001, heightPx / dimensions.width),
     };
   }
 
@@ -371,7 +472,7 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
     if (!pointer) return null;
     return {
       x: Math.max(0, Math.min(1, pointer.x / dimensions.width)),
-      y: Math.max(0, Math.min(1, pointer.y / dimensions.height)),
+      y: Math.max(0, pointer.y / dimensions.width),
     };
   }
 
@@ -416,6 +517,7 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
       localPointsRef.current = [];
       setLocalStroke([]);
       if (points.length < 2) return;
+      const svgPath = computeFreehandPath(points, dimensions.width, 3);
       setStrokes((prev) => [
         ...prev,
         {
@@ -426,6 +528,7 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
           strokeWidth: 2,
           owner: "user",
           elementType: "freehand",
+          svgPath,
         },
       ]);
     } else if (toolMode === "select" && isDraggingRef.current && selectedElementId) {
@@ -573,6 +676,9 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
     }
     if (points.length < 2) return;
 
+    // Smooth freehand control points using Catmull-Rom spline interpolation
+    const smoothedPoints = elementType === "freehand" ? catmullRomSpline(points) : points;
+
     const color = asString(payload["color"], "#111");
     const strokeWidth = asNumber(payload["stroke_width"], 2);
     const strokeId = `${elementType}-${elementId}`;
@@ -580,16 +686,20 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
     if (!animate) {
       setStrokes((prev) => {
         const without = prev.filter((stroke) => stroke.elementId !== elementId);
+        const svgPath = elementType === "freehand"
+          ? computeFreehandPath(smoothedPoints, dimensions.width, strokeWidth * 1.5)
+          : undefined;
         return [
           ...without,
           {
             id: strokeId,
             elementId,
-            points,
+            points: smoothedPoints,
             color,
             strokeWidth,
             owner: "agent",
             elementType,
+            svgPath,
             ...strokeHighlightMeta,
           },
         ];
@@ -597,7 +707,7 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
       return;
     }
 
-    const firstPoint = points[0];
+    const firstPoint = smoothedPoints[0];
     if (!firstPoint) return;
 
     if (elementType === "freehand") {
@@ -621,12 +731,31 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
       ];
     });
 
-    const stepDelay =
-      elementType === "freehand"
-        ? Math.max(6, Math.min(FREEHAND_STEP_DELAY_MS, Math.round(asNumber(payload["delay_ms"], 35) / 2)))
-        : SHAPE_STEP_DELAY_MS;
-
-    await animateStroke(strokeId, points, stepDelay);
+    if (elementType === "freehand") {
+      // Freehand: animate by appending points and recomputing the
+      // perfect-freehand outline on each frame for natural variable-width strokes.
+      const stepDelay = Math.max(6, Math.min(FREEHAND_STEP_DELAY_MS, Math.round(asNumber(payload["delay_ms"], 35) / 2)));
+      const baseSize = strokeWidth * 1.5;
+      for (let i = 1; i < smoothedPoints.length; i++) {
+        if (unmountedRef.current) return;
+        const p = smoothedPoints[i]!;
+        setStrokes((prev) =>
+          prev.map((stroke) => {
+            if (stroke.id !== strokeId) return stroke;
+            const newPoints: PointNorm[] = [...stroke.points, p];
+            return {
+              ...stroke,
+              points: newPoints,
+              svgPath: computeFreehandPath(newPoints, dimensions.width, baseSize),
+            };
+          }),
+        );
+        await sleep(stepDelay);
+      }
+    } else {
+      // Shapes: use linear segment interpolation for animation
+      await animateStroke(strokeId, points, SHAPE_STEP_DELAY_MS);
+    }
   }
 
   useEffect(() => {
@@ -952,9 +1081,9 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
               />
               {graphViewport && (() => {
                 const graphX = graphViewport.x * dimensions.width;
-                const graphY = graphViewport.y * dimensions.height;
+                const graphY = graphViewport.y * dimensions.width;
                 const graphW = graphViewport.width * dimensions.width;
-                const graphH = graphViewport.height * dimensions.height;
+                const graphH = graphViewport.height * dimensions.width;
                 const stepX = graphW / graphViewport.gridLines;
                 const stepY = graphH / graphViewport.gridLines;
 
@@ -1098,9 +1227,9 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
               <Rect
                 key={highlight.id}
                 x={highlight.x * dimensions.width}
-                y={highlight.y * dimensions.height}
+                y={highlight.y * dimensions.width}
                 width={highlight.width * dimensions.width}
-                height={highlight.height * dimensions.height}
+                height={highlight.height * dimensions.width}
                 fill={highlight.color}
               />
             ))}
@@ -1110,12 +1239,45 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
           <Layer>
             {strokes.map((stroke) => {
               const isSelected = stroke.elementId === selectedElementId;
+              const handleClick = () => {
+                if (toolMode === "delete" && stroke.owner === "user") {
+                  handleDeleteStroke(stroke.id);
+                } else if (toolMode === "select") {
+                  handleSelectStroke(stroke.elementId);
+                }
+              };
+              const strokeOpacity = toolMode === "delete" && stroke.owner === "user" ? 0.8 : 1;
+
+              // Freehand strokes with svgPath use perfect-freehand filled polygon
+              if (stroke.svgPath && stroke.elementType === "freehand") {
+                return (
+                  <Shape
+                    key={stroke.id}
+                    sceneFunc={(ctx, shape) => {
+                      const path = new Path2D(stroke.svgPath!);
+                      ctx._context.fillStyle = isSelected ? "#2563eb" : stroke.color;
+                      ctx._context.fill(path);
+                      ctx.fillStrokeShape(shape);
+                    }}
+                    hitFunc={(ctx, shape) => {
+                      const path = new Path2D(stroke.svgPath!);
+                      ctx._context.fill(path);
+                      ctx.fillStrokeShape(shape);
+                    }}
+                    onClick={handleClick}
+                    onTap={handleClick}
+                    opacity={strokeOpacity}
+                  />
+                );
+              }
+
+              // Shapes and fallback: render as Konva Line
               return (
                 <Line
                   key={stroke.id}
                   points={stroke.points.flatMap((point) => [
                     point.x * dimensions.width,
-                    point.y * dimensions.height,
+                    point.y * dimensions.width,
                   ])}
                   stroke={isSelected ? "#2563eb" : stroke.color}
                   strokeWidth={isSelected ? stroke.strokeWidth + 1 : stroke.strokeWidth}
@@ -1123,36 +1285,26 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
                   lineJoin="round"
                   dash={isSelected ? [6, 3] : undefined}
                   hitStrokeWidth={toolMode === "delete" ? 24 : 12}
-                  onClick={() => {
-                    if (toolMode === "delete" && stroke.owner === "user") {
-                      handleDeleteStroke(stroke.id);
-                    } else if (toolMode === "select") {
-                      handleSelectStroke(stroke.elementId);
-                    }
-                  }}
-                  onTap={() => {
-                    if (toolMode === "delete" && stroke.owner === "user") {
-                      handleDeleteStroke(stroke.id);
-                    } else if (toolMode === "select") {
-                      handleSelectStroke(stroke.elementId);
-                    }
-                  }}
-                  opacity={toolMode === "delete" && stroke.owner === "user" ? 0.8 : 1}
+                  onClick={handleClick}
+                  onTap={handleClick}
+                  opacity={strokeOpacity}
                 />
               );
             })}
-            {localStroke.length > 1 && (
-              <Line
-                points={localStroke.flatMap((point) => [
-                  point.x * dimensions.width,
-                  point.y * dimensions.height,
-                ])}
-                stroke="#111"
-                strokeWidth={2}
-                lineCap="round"
-                lineJoin="round"
-              />
-            )}
+            {localStroke.length > 1 && (() => {
+              const ghostPath = computeFreehandPath(localStroke, dimensions.width, 3);
+              if (!ghostPath) return null;
+              return (
+                <Shape
+                  sceneFunc={(ctx, shape) => {
+                    const path = new Path2D(ghostPath);
+                    ctx._context.fillStyle = "#111";
+                    ctx._context.fill(path);
+                    ctx.fillStrokeShape(shape);
+                  }}
+                />
+              );
+            })()}
           </Layer>
 
           {/* Text */}
@@ -1161,7 +1313,7 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
               <Text
                 key={item.id}
                 x={item.x * dimensions.width}
-                y={item.y * dimensions.height}
+                y={item.y * dimensions.width}
                 text={item.text}
                 fontSize={item.fontSize}
                 fill={item.color}
