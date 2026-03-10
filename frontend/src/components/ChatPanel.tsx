@@ -1,11 +1,22 @@
-import { ChangeEvent, FormEvent, useRef, useState } from "react";
-import { ChatImageInput, sendChatMessage } from "../services/orchestratorChat";
+import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  connectLive,
+  disconnectLive,
+  sendAudioChunk,
+  sendImageFrame,
+  type LiveConnectionStatus,
+  type LiveEventPayload,
+} from "../services/orchestratorLive";
+import { startAudioPlayerWorklet } from "../services/audio-player";
+import { startAudioRecorderWorklet, stopMicrophone } from "../services/audio-recorder";
 
-interface ChatTurn {
+const USER_ID = "demo-user";
+const MAX_TURNS = 80;
+
+interface LiveTurn {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
-  toolCalls?: string[];
 }
 
 interface ChatPanelProps {
@@ -29,61 +40,151 @@ async function readFileAsDataUrl(file: File): Promise<string> {
 
 function parseDataUrl(dataUrl: string): { mimeType: string; dataBase64: string } | null {
   const match = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl);
-  if (!match) {
-    return null;
-  }
+  if (!match) return null;
   const mimeType = match[1];
   const dataBase64 = match[2];
-  if (!mimeType || !dataBase64) {
-    return null;
-  }
+  if (!mimeType || !dataBase64) return null;
   return { mimeType, dataBase64 };
 }
 
-export function ChatPanel({ sessionId }: ChatPanelProps) {
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [turns, setTurns] = useState<ChatTurn[]>([]);
-  const [imageAttachment, setImageAttachment] = useState<ChatImageInput | null>(null);
-  const [imageName, setImageName] = useState<string | null>(null);
-  const imageInputRef = useRef<HTMLInputElement | null>(null);
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  let standardBase64 = base64.replace(/-/g, "+").replace(/_/g, "/");
+  while (standardBase64.length % 4 !== 0) {
+    standardBase64 += "=";
+  }
+  const binaryString = window.atob(standardBase64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
 
-  function clearAttachment(): void {
-    setImageAttachment(null);
-    setImageName(null);
-    if (imageInputRef.current) {
-      imageInputRef.current.value = "";
+export function ChatPanel({ sessionId }: ChatPanelProps) {
+  const [status, setStatus] = useState<LiveConnectionStatus>("disconnected");
+  const [turns, setTurns] = useState<LiveTurn[]>([]);
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [proactivity, setProactivity] = useState(false);
+  const [affectiveDialog, setAffectiveDialog] = useState(false);
+
+  const playerNodeRef = useRef<AudioWorkletNode | null>(null);
+  const playerContextRef = useRef<AudioContext | null>(null);
+  const recorderNodeRef = useRef<AudioWorkletNode | null>(null);
+  const recorderContextRef = useRef<AudioContext | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+
+  const addTurn = useCallback((role: LiveTurn["role"], text: string) => {
+    const clean = text.trim();
+    if (!clean) return;
+    const nextTurn: LiveTurn = {
+      id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      role,
+      text: clean,
+    };
+    setTurns((prev) => [...prev, nextTurn].slice(-MAX_TURNS));
+  }, []);
+
+  const handleEvent = useCallback((event: LiveEventPayload) => {
+    if (event.error) {
+      addTurn("system", `Live error: ${event.error}`);
+    }
+
+    if (event.inputTranscription?.finished && event.inputTranscription.text) {
+      addTurn("user", event.inputTranscription.text);
+    }
+    if (event.outputTranscription?.finished && event.outputTranscription.text) {
+      addTurn("assistant", event.outputTranscription.text);
+    }
+
+    const parts = event.content?.parts ?? [];
+    for (const part of parts) {
+      const audioData = part.inlineData?.data;
+      const mimeType = part.inlineData?.mimeType ?? "";
+      if (audioData && mimeType.startsWith("audio/pcm") && playerNodeRef.current) {
+        playerNodeRef.current.port.postMessage(base64ToArrayBuffer(audioData));
+      }
+      if (part.text && !part.thought && !event.outputTranscription?.text) {
+        addTurn("assistant", part.text);
+      }
+    }
+  }, [addTurn]);
+
+  useEffect(() => {
+    connectLive(
+      USER_ID,
+      sessionId,
+      { proactivity, affectiveDialog },
+      handleEvent,
+      setStatus,
+    );
+
+    return () => {
+      disconnectLive();
+    };
+  }, [affectiveDialog, handleEvent, proactivity, sessionId]);
+
+  async function startAudio(): Promise<void> {
+    if (audioEnabled) return;
+    try {
+      const [playerNode, playerContext] = await startAudioPlayerWorklet();
+      const [recorderNode, recorderContext, micStream] = await startAudioRecorderWorklet(
+        (pcmData) => {
+          void sendAudioChunk(pcmData);
+        },
+      );
+      playerNodeRef.current = playerNode;
+      playerContextRef.current = playerContext;
+      recorderNodeRef.current = recorderNode;
+      recorderContextRef.current = recorderContext;
+      micStreamRef.current = micStream;
+      setAudioEnabled(true);
+      addTurn("system", "Audio streaming started.");
+    } catch (error) {
+      addTurn("system", `Failed to start audio: ${String(error)}`);
     }
   }
 
+  async function stopAudio(): Promise<void> {
+    if (recorderNodeRef.current) {
+      recorderNodeRef.current.disconnect();
+      recorderNodeRef.current = null;
+    }
+    if (playerNodeRef.current) {
+      playerNodeRef.current.port.postMessage({ command: "endOfAudio" });
+      playerNodeRef.current.disconnect();
+      playerNodeRef.current = null;
+    }
+    stopMicrophone(micStreamRef.current);
+    micStreamRef.current = null;
+
+    if (recorderContextRef.current) {
+      await recorderContextRef.current.close();
+      recorderContextRef.current = null;
+    }
+    if (playerContextRef.current) {
+      await playerContextRef.current.close();
+      playerContextRef.current = null;
+    }
+
+    setAudioEnabled(false);
+    addTurn("system", "Audio streaming stopped.");
+  }
+
+  useEffect(() => {
+    return () => {
+      void stopAudio();
+    };
+  }, []);
+
   async function onImageChange(e: ChangeEvent<HTMLInputElement>): Promise<void> {
     const file = e.target.files?.[0];
-    if (!file) {
-      clearAttachment();
-      return;
-    }
+    if (!file) return;
     if (!file.type.startsWith("image/")) {
-      setTurns((prev) => [
-        ...prev,
-        {
-          id: `s-${Date.now()}`,
-          role: "system",
-          text: "Only image files are supported.",
-        },
-      ]);
-      clearAttachment();
+      addTurn("system", "Only image files are supported.");
       return;
     }
     if (file.size > 10 * 1024 * 1024) {
-      setTurns((prev) => [
-        ...prev,
-        {
-          id: `s-${Date.now()}`,
-          role: "system",
-          text: "Image exceeds 10 MB limit.",
-        },
-      ]);
-      clearAttachment();
+      addTurn("system", "Image exceeds 10 MB limit.");
       return;
     }
 
@@ -93,141 +194,82 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       if (!parsed) {
         throw new Error("Invalid data URL");
       }
-      setImageAttachment({
-        mime_type: parsed.mimeType,
-        data_base64: parsed.dataBase64,
-        filename: file.name,
-      });
-      setImageName(file.name);
+      const sent = sendImageFrame(parsed.dataBase64, parsed.mimeType);
+      if (!sent) {
+        addTurn("system", "Image was not sent (live socket disconnected).");
+      } else {
+        addTurn("user", `[Image] ${file.name}`);
+      }
     } catch {
-      setTurns((prev) => [
-        ...prev,
-        {
-          id: `s-${Date.now()}`,
-          role: "system",
-          text: "Failed to load image attachment.",
-        },
-      ]);
-      clearAttachment();
-    }
-  }
-
-  async function onSubmit(e: FormEvent<HTMLFormElement>): Promise<void> {
-    e.preventDefault();
-    const text = input.trim();
-    if ((!text && !imageAttachment) || sending) return;
-    const outgoingImage = imageAttachment;
-    const outgoingImageName = imageName;
-
-    const userTurn: ChatTurn = {
-      id: `u-${Date.now()}`,
-      role: "user",
-      text: text
-        ? (outgoingImageName ? `${text}\n[Image: ${outgoingImageName}]` : text)
-        : `[Image: ${outgoingImageName ?? "attachment"}]`,
-    };
-    setTurns((prev) => [...prev, userTurn]);
-    setInput("");
-    clearAttachment();
-    setSending(true);
-
-    try {
-      const resp = await sendChatMessage(
-        sessionId,
-        text,
-        outgoingImage ? [outgoingImage] : [],
-      );
-      setTurns((prev) => [
-        ...prev,
-        {
-          id: `a-${Date.now()}`,
-          role: "assistant",
-          text: resp.assistant_text || "(No text response)",
-          toolCalls: resp.tool_calls,
-        },
-      ]);
-    } catch (err) {
-      setTurns((prev) => [
-        ...prev,
-        {
-          id: `s-${Date.now()}`,
-          role: "system",
-          text: `Request failed: ${String(err)}`,
-        },
-      ]);
+      addTurn("system", "Failed to load image attachment.");
     } finally {
-      setSending(false);
+      e.target.value = "";
     }
   }
 
   return (
     <aside className="chat-panel">
       <div className="chat-header">
-        <strong>Agent Chat</strong>
+        <strong>Live Agent</strong>
         <span className="chat-session">session: {sessionId}</span>
+        <span className="chat-session">status: {status}</span>
+      </div>
+
+      <div className="chat-controls">
+        <label className="chat-toggle">
+          <input
+            type="checkbox"
+            checked={proactivity}
+            onChange={(e) => setProactivity(e.target.checked)}
+          />
+          proactivity
+        </label>
+        <label className="chat-toggle">
+          <input
+            type="checkbox"
+            checked={affectiveDialog}
+            onChange={(e) => setAffectiveDialog(e.target.checked)}
+          />
+          affective dialog
+        </label>
       </div>
 
       <div className="chat-log">
         {turns.length === 0 ? (
-          <div className="chat-empty">Ask Sona a question to test tools.</div>
+          <div className="chat-empty">Start audio and speak to Sona.</div>
         ) : (
           turns.map((turn) => (
             <div key={turn.id} className={`chat-turn chat-${turn.role}`}>
               <div className="chat-role">{turn.role}</div>
               <div className="chat-text">{turn.text}</div>
-              {turn.toolCalls && turn.toolCalls.length > 0 && (
-                <div className="chat-tools">
-                  tools: {turn.toolCalls.join(", ")}
-                </div>
-              )}
             </div>
           ))
         )}
       </div>
 
-      <form onSubmit={onSubmit} className="chat-form">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              if ((input.trim() || imageAttachment) && !sending) {
-                e.currentTarget.form?.requestSubmit();
-              }
+      <div className="chat-form">
+        <button
+          type="button"
+          onClick={() => {
+            if (audioEnabled) {
+              void stopAudio();
+            } else {
+              void startAudio();
             }
           }}
-          placeholder="Type a math prompt or attach an image... (Enter to send, Shift+Enter for newline)"
-          disabled={sending}
-          rows={3}
-        />
+        >
+          {audioEnabled ? "Stop Audio" : "Start Audio"}
+        </button>
         <div className="chat-attachments">
           <input
-            ref={imageInputRef}
             type="file"
             accept="image/*"
             onChange={(e) => {
               void onImageChange(e);
             }}
-            disabled={sending}
           />
-          {imageName && (
-            <div className="chat-attachment-row">
-              <span>Attached: {imageName}</span>
-              <button
-                type="button"
-                onClick={clearAttachment}
-                disabled={sending}
-              >
-                Remove
-              </button>
-            </div>
-          )}
         </div>
-        <button type="submit" disabled={sending || (!input.trim() && !imageAttachment)}>
-          {sending ? "Sending..." : "Send"}
-        </button>
-      </form>
+      </div>
     </aside>
   );
 }

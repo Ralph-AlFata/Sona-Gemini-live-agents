@@ -11,6 +11,11 @@ export default defineConfig({
         ws: true,
         rewrite: (path) => path.replace(/^\/ws\/drawing/, "/ws"),
       },
+      "/ws/orchestrator": {
+        target: "ws://localhost:8001",
+        ws: true,
+        rewrite: (path) => path.replace(/^\/ws\/orchestrator/, ""),
+      },
       "/api/drawing": {
         target: "http://localhost:8002",
         changeOrigin: true,
