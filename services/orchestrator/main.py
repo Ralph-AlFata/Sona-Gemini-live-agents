@@ -2,23 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
-import binascii
+import json
 import logging
 import os
+import warnings
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from google.adk.agents.run_config import RunConfig
-from google.adk.events.event import Event
-from google.adk.runners import LiveRequestQueue, Runner
+from google.adk.agents.live_request_queue import LiveRequestQueue
+from google.adk.agents.run_config import RunConfig, StreamingMode
+from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-from google.genai import types as genai_types
-from pydantic import BaseModel, Field, model_validator
+from google.genai import types
 
 from agent import root_agent
 from config import settings
@@ -30,31 +31,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-
-class ChatImage(BaseModel):
-    mime_type: str = Field(min_length=1, max_length=128, pattern=r"^image\/[a-zA-Z0-9.+-]+$")
-    data_base64: str = Field(min_length=1, max_length=20_000_000)
-    filename: str | None = Field(default=None, min_length=1, max_length=256)
-
-
-class ChatRequest(BaseModel):
-    text: str = Field(default="", max_length=10_000)
-    images: list[ChatImage] = Field(default_factory=list, max_length=3)
-
-    @model_validator(mode="after")
-    def _validate_non_empty(self) -> "ChatRequest":
-        if not self.text.strip() and not self.images:
-            raise ValueError("provide non-empty text and/or at least one image")
-        return self
-
-
-class ChatResponse(BaseModel):
-    session_id: str
-    user_text: str
-    assistant_text: str
-    tool_calls: list[str]
-
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 @dataclass(slots=True)
 class LiveRuntime:
@@ -62,9 +39,6 @@ class LiveRuntime:
 
     runner: Runner
     session_service: InMemorySessionService
-    live_run_config: RunConfig
-    chat_run_config: RunConfig
-    live_request_queue: LiveRequestQueue
 
 
 def build_live_runtime() -> LiveRuntime:
@@ -75,15 +49,9 @@ def build_live_runtime() -> LiveRuntime:
         agent=root_agent,
         session_service=session_service,
     )
-    live_run_config = RunConfig(response_modalities=["AUDIO"])
-    chat_run_config = RunConfig(response_modalities=["TEXT"])
-    live_request_queue = LiveRequestQueue()
     return LiveRuntime(
         runner=runner,
         session_service=session_service,
-        live_run_config=live_run_config,
-        chat_run_config=chat_run_config,
-        live_request_queue=live_request_queue,
     )
 
 
@@ -117,63 +85,35 @@ def _configure_gemini_environment() -> bool:
     return settings.chat_mode != "mock"
 
 
-def _extract_text_from_event(event: Event) -> str:
-    content = event.content
-    if content is None or not content.parts:
-        return ""
-
-    chunks: list[str] = []
-    for part in content.parts:
-        if part.text:
-            text = part.text.strip()
-            if text:
-                chunks.append(text)
-    return "\n".join(chunks)
-
-
-def _dedupe_keep_order(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        if item not in seen:
-            out.append(item)
-            seen.add(item)
-    return out
-
-
-def _build_user_message_parts(body: ChatRequest) -> tuple[str, list[genai_types.Part]]:
-    user_text = body.text.strip()
-    parts: list[genai_types.Part] = []
-    if user_text:
-        parts.append(genai_types.Part(text=user_text))
-
-    for idx, image in enumerate(body.images):
-        try:
-            raw_bytes = base64.b64decode(image.data_base64, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise ValueError(f"images[{idx}].data_base64 is not valid base64") from exc
-
-        if not raw_bytes:
-            raise ValueError(f"images[{idx}] is empty")
-        if len(raw_bytes) > 10 * 1024 * 1024:
-            raise ValueError(f"images[{idx}] exceeds 10 MB")
-
-        parts.append(
-            genai_types.Part.from_bytes(
-                data=raw_bytes,
-                mime_type=image.mime_type,
-            )
+def _build_live_run_config(proactivity: bool, affective_dialog: bool) -> RunConfig:
+    model_name = str(root_agent.model)
+    is_native_audio = "native-audio" in model_name.lower()
+    if not is_native_audio and (proactivity or affective_dialog):
+        logger.warning(
+            "proactivity/affective_dialog are only supported for native audio models "
+            "(current model=%s); ignoring these flags",
+            model_name,
         )
 
-    if not parts:
-        raise ValueError("provide non-empty text and/or at least one image")
-    return user_text, parts
+    return RunConfig(
+        streaming_mode=StreamingMode.BIDI,
+        response_modalities=["AUDIO"],
+        input_audio_transcription=types.AudioTranscriptionConfig() if is_native_audio else None,
+        output_audio_transcription=types.AudioTranscriptionConfig() if is_native_audio else None,
+        session_resumption=types.SessionResumptionConfig(),
+        proactivity=(
+            types.ProactivityConfig(proactive_audio=False) # TODO: Check if later we want to switch to True. For now let's keep if False
+            if is_native_audio and proactivity
+            else None
+        ),
+        enable_affective_dialog=affective_dialog if is_native_audio and affective_dialog else None,
+    )
 
 
-async def _ensure_adk_session(runtime: LiveRuntime, session_id: str) -> None:
+async def _ensure_adk_session(runtime: LiveRuntime, user_id: str, session_id: str) -> None:
     existing = await runtime.session_service.get_session(
         app_name=settings.app_name,
-        user_id=settings.default_user_id,
+        user_id=user_id,
         session_id=session_id,
     )
     if existing is not None:
@@ -181,46 +121,23 @@ async def _ensure_adk_session(runtime: LiveRuntime, session_id: str) -> None:
 
     await runtime.session_service.create_session(
         app_name=settings.app_name,
-        user_id=settings.default_user_id,
+        user_id=user_id,
         session_id=session_id,
         state={"session_id": session_id},
     )
 
-
-def _mock_chat_response(session_id: str, text: str, image_count: int = 0) -> ChatResponse:
-    lowered = text.lower()
-    tool_calls: list[str] = []
-
-    if "clear" in lowered:
-        tool_calls.append("clear_canvas")
-    if image_count > 0 or any(token in lowered for token in ("draw", "graph", "plot", "shape", "equation", "line")):
-        tool_calls.append("draw_text")
-
-    return ChatResponse(
-        session_id=session_id,
-        user_text=text or "(image input)",
-        assistant_text=(
-            "Mock mode response. Backend chat wiring is active; "
-            "switch chat_mode=gemini with valid credentials for real model output. "
-            f"Received {image_count} image(s)."
-        ),
-        tool_calls=tool_calls,
-    )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    app.state.chat_uses_gemini = _configure_gemini_environment()
+    app.state.live_uses_gemini = _configure_gemini_environment()
     app.state.live_runtime = build_live_runtime()
 
     logger.info(
-        "Orchestrator service startup complete on port %s (chat_mode=%s, gemini_enabled=%s)",
+        "Orchestrator service startup complete on port %s (chat_mode=%s, live_enabled=%s)",
         os.getenv("PORT", "8001"),
         settings.chat_mode,
-        app.state.chat_uses_gemini,
+        app.state.live_uses_gemini,
     )
     yield
-    app.state.live_runtime.live_request_queue.close()
     logger.info("Orchestrator service shutdown complete")
 
 
@@ -253,58 +170,116 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok", "service": "orchestrator"}
 
 
-@app.post("/chat/{session_id}", response_model=ChatResponse, tags=["chat"])
-async def chat(session_id: str, body: ChatRequest) -> ChatResponse:
-    try:
-        user_text, user_parts = _build_user_message_parts(body)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+@app.websocket("/ws/{user_id}/{session_id}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    user_id: str,
+    session_id: str,
+    proactivity: bool = False,
+    affective_dialog: bool = False,
+) -> None:
+    """WebSocket endpoint for bidirectional streaming with ADK.
 
-    if not getattr(app.state, "chat_uses_gemini", False):
-        return _mock_chat_response(
-            session_id=session_id,
-            text=user_text,
-            image_count=len(body.images),
+    Args:
+        websocket: The WebSocket connection
+        user_id: User identifier
+        session_id: Session identifier
+        proactivity: Enable proactive audio (native audio models only)
+        affective_dialog: Enable affective dialog (native audio models only)
+    """
+    await websocket.accept()
+
+    if not getattr(app.state, "live_uses_gemini", False):
+        await websocket.send_json(
+            {
+                "error": "Gemini live mode is not enabled for this environment.",
+                "session_id": session_id,
+            }
         )
+        await websocket.close(code=1011)
+        return
 
     runtime: LiveRuntime | None = getattr(app.state, "live_runtime", None)
     if runtime is None:
-        raise HTTPException(status_code=500, detail="runtime is not initialized")
+        await websocket.close(code=1011)
+        return
 
-    await _ensure_adk_session(runtime, session_id)
+    # TODO: Double check here if the actual runtime is being updated globally, or it's just inside the function and then it's dropping
+    await _ensure_adk_session(runtime, user_id=user_id, session_id=session_id)
+    live_request_queue = LiveRequestQueue()
+    run_config = _build_live_run_config(
+        proactivity=proactivity,
+        affective_dialog=affective_dialog,
+    )
 
-    assistant_fragments: list[str] = []
-    tool_calls: list[str] = []
+    async def upstream_task() -> None:
+        """Receives messages from WebSocket and sends to LiveRequestQueue."""
+        while True:
+            # Receive message from WebSocket (text or binary)
+            message = await websocket.receive()
+
+            if "bytes" in message:
+                audio_data = message["bytes"]
+
+                audio_blob = types.Blob(
+                    mime_type="audio/pcm;rate=16000", data=audio_data
+                )
+                live_request_queue.send_realtime(audio_blob)
+            
+            # TODO: For now, we are skipping any text input. We will explore later to change things
+            elif "text" in message:
+                continue
+                # text_data = message["text"]
+                # logger.debug(f"Received text message: {text_data[:100]}...")
+
+                # json_message = json.loads(text_data)
+
+                # # Extract text from JSON and send to LiveRequestQueue
+                # if json_message.get("type") == "text":
+                #     logger.debug(f"Sending text content: {json_message['text']}")
+                #     content = types.Content(
+                #         parts=[types.Part(text=json_message["text"])]
+                #     )
+                #     live_request_queue.send_content(content)
+
+                # # Handle image data
+                # elif json_message.get("type") == "image":
+                #     logger.debug("Received image data")
+
+                #     # Decode base64 image data
+                #     image_data = base64.b64decode(json_message["data"])
+                #     mime_type = json_message.get("mimeType", "image/jpeg")
+
+                #     logger.debug(
+                #         f"Sending image: {len(image_data)} bytes, " f"type: {mime_type}"
+                #     )
+
+                #     # Send image as blob
+                #     image_blob = types.Blob(mime_type=mime_type, data=image_data)
+                #     live_request_queue.send_realtime(image_blob)
+        
+
+    async def downstream_task() -> None:
+        async for event in runtime.runner.run_live(
+            user_id=user_id,
+            session_id=session_id,
+            live_request_queue=live_request_queue,
+            run_config=run_config,
+        ):
+            event_json = event.model_dump_json(exclude_none=True, by_alias=True)
+            logger.debug(f"[SERVER] Event: {event_json}")
+            await websocket.send_text(event_json)
 
     try:
-        async for event in runtime.runner.run_async(
-            user_id=settings.default_user_id,
-            session_id=session_id,
-            new_message=genai_types.Content(
-                role="user",
-                parts=user_parts,
-            ),
-            run_config=runtime.chat_run_config,
-        ):
-            for func_call in event.get_function_calls():
-                if func_call.name:
-                    tool_calls.append(str(func_call.name))
-
-            text = _extract_text_from_event(event)
-            if text:
-                assistant_fragments.append(text)
-
+        await asyncio.gather(upstream_task(), downstream_task())
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected user_id=%s session_id=%s", user_id, session_id)
     except Exception as exc:
-        logger.exception("Chat request failed for session_id=%s", session_id)
-        raise HTTPException(status_code=500, detail=f"chat execution failed: {exc}") from exc
-
-    assistant_text = "\n".join(assistant_fragments).strip()
-    if not assistant_text:
-        assistant_text = "I processed your request but did not generate text output."
-
-    return ChatResponse(
-        session_id=session_id,
-        user_text=user_text or "(image input)",
-        assistant_text=assistant_text,
-        tool_calls=_dedupe_keep_order(tool_calls),
-    )
+        logger.exception(
+            "Live websocket failed user_id=%s session_id=%s: %s",
+            user_id,
+            session_id,
+            exc,
+        )
+    finally:
+        live_request_queue.close()
