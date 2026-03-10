@@ -9,6 +9,7 @@ export async function startAudioRecorderWorklet(
     audio: { channelCount: 1 },
   });
   const source = audioRecorderContext.createMediaStreamSource(micStream);
+  // Create an AudioWorkletNode that uses the PCMProcessor
   const audioRecorderNode = new AudioWorkletNode(
     audioRecorderContext,
     "pcm-recorder-processor",

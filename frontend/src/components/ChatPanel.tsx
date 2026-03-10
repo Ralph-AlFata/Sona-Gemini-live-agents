@@ -2,6 +2,8 @@ import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   connectLive,
   disconnectLive,
+  sendActivityEnd,
+  sendActivityStart,
   sendAudioChunk,
   sendImageFrame,
   type LiveConnectionStatus,
@@ -64,6 +66,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [status, setStatus] = useState<LiveConnectionStatus>("disconnected");
   const [turns, setTurns] = useState<LiveTurn[]>([]);
   const [audioEnabled, setAudioEnabled] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [proactivity, setProactivity] = useState(false);
   const [affectiveDialog, setAffectiveDialog] = useState(false);
 
@@ -72,6 +75,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const recorderNodeRef = useRef<AudioWorkletNode | null>(null);
   const recorderContextRef = useRef<AudioContext | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
+  const isSpeakingRef = useRef(false);
 
   const addTurn = useCallback((role: LiveTurn["role"], text: string) => {
     const clean = text.trim();
@@ -129,7 +133,9 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       const [playerNode, playerContext] = await startAudioPlayerWorklet();
       const [recorderNode, recorderContext, micStream] = await startAudioRecorderWorklet(
         (pcmData) => {
-          void sendAudioChunk(pcmData);
+          if (isSpeakingRef.current) {
+            void sendAudioChunk(pcmData);
+          }
         },
       );
       playerNodeRef.current = playerNode;
@@ -168,6 +174,20 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
     setAudioEnabled(false);
     addTurn("system", "Audio streaming stopped.");
+  }
+
+  function startSpeaking(): void {
+    if (!audioEnabled || isSpeakingRef.current) return;
+    isSpeakingRef.current = true;
+    setIsSpeaking(true);
+    sendActivityStart();
+  }
+
+  function stopSpeaking(): void {
+    if (!isSpeakingRef.current) return;
+    isSpeakingRef.current = false;
+    setIsSpeaking(false);
+    sendActivityEnd();
   }
 
   useEffect(() => {
@@ -260,6 +280,25 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         >
           {audioEnabled ? "Stop Audio" : "Start Audio"}
         </button>
+        {audioEnabled && (
+          <button
+            type="button"
+            className={`push-to-talk ${isSpeaking ? "speaking" : ""}`}
+            onMouseDown={startSpeaking}
+            onMouseUp={stopSpeaking}
+            onMouseLeave={stopSpeaking}
+            onTouchStart={(e) => {
+              e.preventDefault();
+              startSpeaking();
+            }}
+            onTouchEnd={(e) => {
+              e.preventDefault();
+              stopSpeaking();
+            }}
+          >
+            {isSpeaking ? "Speaking..." : "Hold to Talk"}
+          </button>
+        )}
         <div className="chat-attachments">
           <input
             type="file"
