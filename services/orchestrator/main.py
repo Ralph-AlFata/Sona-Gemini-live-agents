@@ -101,8 +101,13 @@ def _build_live_run_config(proactivity: bool, affective_dialog: bool) -> RunConf
         input_audio_transcription=types.AudioTranscriptionConfig() if is_native_audio else None,
         output_audio_transcription=types.AudioTranscriptionConfig() if is_native_audio else None,
         session_resumption=types.SessionResumptionConfig(),
+        realtime_input_config=types.RealtimeInputConfig(
+            automatic_activity_detection=types.AutomaticActivityDetection(
+                disabled=True,
+            ),
+        ),
         proactivity=(
-            types.ProactivityConfig(proactive_audio=False) # TODO: Check if later we want to switch to True. For now let's keep if False
+            types.ProactivityConfig(proactive_audio=False)
             if is_native_audio and proactivity
             else None
         ),
@@ -213,50 +218,44 @@ async def websocket_endpoint(
     )
 
     async def upstream_task() -> None:
-        """Receives messages from WebSocket and sends to LiveRequestQueue."""
+        """Receives messages from WebSocket and sends to LiveRequestQueue.
+
+        Supports manual turn control via JSON control messages:
+          {"type": "activity_start"}  — user started speaking
+          {"type": "activity_end"}    — user stopped speaking
+        Audio bytes are only forwarded while an activity window is open.
+        """
+        is_speaking = False
+
         while True:
-            # Receive message from WebSocket (text or binary)
             message = await websocket.receive()
 
             if "bytes" in message:
+                if not is_speaking:
+                    continue
                 audio_data = message["bytes"]
-
                 audio_blob = types.Blob(
                     mime_type="audio/pcm;rate=16000", data=audio_data
                 )
                 live_request_queue.send_realtime(audio_blob)
-            
-            # TODO: For now, we are skipping any text input. We will explore later to change things
+
             elif "text" in message:
-                continue
-                # text_data = message["text"]
-                # logger.debug(f"Received text message: {text_data[:100]}...")
+                try:
+                    json_message = json.loads(message["text"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
 
-                # json_message = json.loads(text_data)
+                msg_type = json_message.get("type")
 
-                # # Extract text from JSON and send to LiveRequestQueue
-                # if json_message.get("type") == "text":
-                #     logger.debug(f"Sending text content: {json_message['text']}")
-                #     content = types.Content(
-                #         parts=[types.Part(text=json_message["text"])]
-                #     )
-                #     live_request_queue.send_content(content)
+                if msg_type == "activity_start":
+                    is_speaking = True
+                    live_request_queue.send_activity_start()
+                    logger.debug("Activity start signalled")
 
-                # # Handle image data
-                # elif json_message.get("type") == "image":
-                #     logger.debug("Received image data")
-
-                #     # Decode base64 image data
-                #     image_data = base64.b64decode(json_message["data"])
-                #     mime_type = json_message.get("mimeType", "image/jpeg")
-
-                #     logger.debug(
-                #         f"Sending image: {len(image_data)} bytes, " f"type: {mime_type}"
-                #     )
-
-                #     # Send image as blob
-                #     image_blob = types.Blob(mime_type=mime_type, data=image_data)
-                #     live_request_queue.send_realtime(image_blob)
+                elif msg_type == "activity_end":
+                    is_speaking = False
+                    live_request_queue.send_activity_end()
+                    logger.debug("Activity end signalled")
         
 
     async def downstream_task() -> None:

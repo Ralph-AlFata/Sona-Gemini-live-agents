@@ -173,6 +173,18 @@ export function sendAudioChunk(chunk: ArrayBuffer): boolean {
   return true;
 }
 
+export function sendActivityStart(): boolean {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify({ type: "activity_start" }));
+  return true;
+}
+
+export function sendActivityEnd(): boolean {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify({ type: "activity_end" }));
+  return true;
+}
+
 export function sendImageFrame(base64Data: string, mimeType: string): boolean {
   if (!socket || socket.readyState !== WebSocket.OPEN) return false;
   socket.send(
