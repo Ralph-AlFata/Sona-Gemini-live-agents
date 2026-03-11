@@ -23,6 +23,11 @@ async def draw_axes_grid(
     y_max: float = 10.0,
     tool_context: ToolContext | None = None,
 ) -> dict:
+    """Set up a graph viewport with axes and grid lines.
+
+    Invocation condition: Call ONCE per graph. Do not redraw the grid if it
+    already exists on the canvas.
+    """
     if width <= 0 or height <= 0:
         raise ValueError("width and height must be greater than 0")
     if domain_max <= domain_min:
@@ -73,6 +78,11 @@ async def draw_number_line(
     tick_height: float = 0.04,
     tool_context: ToolContext | None = None,
 ) -> dict:
+    """Draw a number line with ticks and labels.
+
+    Invocation condition: Call ONCE per number line. Do not redraw if a
+    number line already exists on the canvas.
+    """
     if max_value <= min_value:
         raise ValueError("max_value must be greater than min_value")
 
@@ -140,6 +150,11 @@ async def plot_function_2d(
     samples: int = 200,
     tool_context: ToolContext | None = None,
 ) -> dict:
+    """Plot a mathematical function on the graph viewport.
+
+    Invocation condition: Call ONCE per function expression. Do not replot
+    the same expression that already has a confirmed element ID.
+    """
     if domain_max <= domain_min:
         raise ValueError("domain_max must be greater than domain_min")
     if y_max <= y_min:
