@@ -4,22 +4,7 @@ from __future__ import annotations
 
 from google.adk.agents.llm_agent import Agent
 
-from agent.tools import (
-    clear_canvas,
-    delete_elements,
-    draw_axes_grid,
-    draw_freehand,
-    draw_number_line,
-    draw_shape,
-    draw_text,
-    erase_region,
-    highlight_region,
-    move_elements,
-    plot_function_2d,
-    resize_elements,
-    update_element_points,
-    update_element_style,
-)
+from agent.tools import draw, edit_canvas, graph, highlight
 from config import settings
 
 SYSTEM_PROMPT = """
@@ -40,43 +25,48 @@ Canvas coordinate system (IMPORTANT — width-uniform coordinates, NOT math spac
 - SAFE ZONE: Keep content within x=[0.02, 0.98] and y=[0.02, 0.54] to be visible
   on most screens (assumes 16:9 landscape).
 
-Tool usage policy:
-- Use width-uniform coordinates for all positions and sizes (x in [0,1], y in [0, y_max]).
-- draw_shape requires a shape name (rendering hint) and an explicit list of {x, y} points.
-  Remember: larger y = lower on screen. Examples for a shape occupying x=[0.25,0.75], y=[0.10,0.45]:
-    line:           2 points — [start, end]
-    rectangle:      5 points — [top-left, top-right, bottom-right, bottom-left, top-left]
-                    e.g. [{x:0.25,y:0.10},{x:0.75,y:0.10},{x:0.75,y:0.45},{x:0.25,y:0.45},{x:0.25,y:0.10}]
-    square:         5 points — same as rectangle with EQUAL width and height
-                    e.g. 0.2×0.2: [{x:0.3,y:0.10},{x:0.5,y:0.10},{x:0.5,y:0.30},{x:0.3,y:0.30},{x:0.3,y:0.10}]
-    triangle:       4 points — [bottom-left, bottom-right, apex(top-center), bottom-left]
-                    "bottom" = high y (e.g. y=0.45), "top/apex" = low y (e.g. y=0.10)
-    right_triangle: 4 points — [right-angle corner(low-x,high-y), far-base(high-x,high-y), apex(low-x,low-y), right-angle corner]
-                    e.g. [{x:0.25,y:0.45},{x:0.75,y:0.45},{x:0.25,y:0.10},{x:0.25,y:0.45}]
-    circle:         49 points — uses min(width,height)/2 as radius so it's always round
-                    e.g. radius 0.1 centered at (0.5,0.25): pass width=0.2, height=0.2
-    ellipse:        49 points — cx + rx*cos(t), cy + ry*sin(t) for t in 0..2π (48 segments + close)
-    polygon:        n+1 points — n vertices + closing point
-- draw_freehand points are smoothed with Catmull-Rom spline interpolation on the
-  frontend, so you only need to send key control points (corners, inflection points,
-  endpoints). The curve will pass through every point smoothly. For example, a
-  wavy underline only needs 5-8 control points, not dozens.
-- Prefer draw_axes_grid, draw_number_line, and plot_function_2d for graphing tasks.
-- draw_axes_grid sets the graph viewport instantly (grid + axes). Use matching
-  x/y/width/height/domain_min/domain_max/y_min/y_max in plot_function_2d so curves align.
-- Use draw_text for labels and short notes. x,y is the top-left of the text bounding box.
-- highlight_region takes element_ids (IDs returned by prior draw calls) and a highlight_type:
-    "marker"       — semi-transparent rectangle (default)
-    "circle"       — ellipse outline
-    "pointer"      — ellipse + arrow
-    "color_change" — applies stroke/fill color to the target elements
-- When correcting mistakes, use delete/move/resize/update_element_style/update_element_points tools instead of redrawing.
-- Keep drawings readable; avoid dense overlapping marks.
+You have 4 tools.  Each tool has an `action` field that selects the operation:
+
+1. draw(action, ...) — create new visual elements
+   action="shape":    requires `shape` and `points` (list of {x,y}).
+     shape examples (larger y = lower on screen):
+       line:           2 points — [start, end]
+       rectangle:      5 points — [TL, TR, BR, BL, TL]
+       square:         5 points — same as rectangle, equal sides
+       triangle:       4 points — [BL, BR, apex, BL]
+       right_triangle: 4 points — [right-angle, far-base, apex, right-angle]
+       circle:         49 points — computed from center + radius
+       ellipse:        49 points — cx+rx·cos, cy+ry·sin
+       polygon:        n+1 points — n vertices + close
+   action="text":     requires `text`, `x`, `y`.  x,y is top-left of text.
+   action="freehand": requires `points`.  Catmull-Rom smoothed on frontend —
+                       only send key control points (5-8 for a curve).
+
+2. edit_canvas(action, ...) — modify or remove existing elements
+   action="delete":        requires `element_ids`
+   action="erase":         requires `x`, `y`, `width`, `height`
+   action="move":          requires `element_ids`, `dx`, `dy`
+   action="resize":        requires `element_ids`, `scale_x`, `scale_y`
+   action="update_points": requires `element_id`, `points`, optional `mode`
+   action="update_style":  requires `element_ids` + style fields
+   action="clear":         wipes entire canvas
+
+3. graph(action, ...) — mathematical graphing
+   action="axes_grid":     set up graph viewport with grid + axes
+   action="number_line":   draw a labelled number line
+   action="plot_function": plot an expression (e.g. "2*x+1").  Requires `expression`.
+   Use matching x/y/width/height/domain/y ranges between axes_grid and plot_function.
+
+4. highlight(element_ids, highlight_type, ...) — highlight existing elements
+   highlight_type: "marker" | "circle" | "pointer" | "color_change"
+
+When correcting mistakes, use edit_canvas (delete/move/resize/update_style/update_points)
+instead of redrawing.  Keep drawings readable; avoid dense overlapping marks.
 
 Drawing discipline (CRITICAL — follow these rules strictly):
 - All your drawing tool calls within a single turn are batched and applied together.
   You MAY issue multiple distinct tool calls per turn — they will be rendered at once.
-- NEVER call the same drawing tool twice with identical or near-identical parameters.
+- NEVER call the same tool twice with identical or near-identical parameters.
   Each tool call response includes created_element_ids confirming the element exists.
   If you received a successful response with an element ID, that element is drawn. Do NOT redraw it.
 - Keep tool calls to a maximum of 5 per turn. Each call must be meaningfully different.
@@ -99,19 +89,9 @@ root_agent = Agent(
     model=settings.model_name,
     instruction=SYSTEM_PROMPT,
     tools=[
-        draw_shape,
-        draw_text,
-        draw_freehand,
-        highlight_region,
-        clear_canvas,
-        delete_elements,
-        erase_region,
-        move_elements,
-        resize_elements,
-        update_element_points,
-        update_element_style,
-        draw_axes_grid,
-        draw_number_line,
-        plot_function_2d,
+        draw,
+        edit_canvas,
+        graph,
+        highlight,
     ],
 )
