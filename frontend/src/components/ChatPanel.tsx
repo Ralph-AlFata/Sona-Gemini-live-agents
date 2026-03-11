@@ -178,9 +178,17 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
   function startSpeaking(): void {
     if (!audioEnabled || isSpeakingRef.current) return;
+    // Flush any buffered assistant audio so a new user turn starts clean.
+    if (playerNodeRef.current) {
+      playerNodeRef.current.port.postMessage({ command: "endOfAudio" });
+    }
     isSpeakingRef.current = true;
     setIsSpeaking(true);
-    sendActivityStart();
+    const sent = sendActivityStart();
+    if (!sent) {
+      isSpeakingRef.current = false;
+      setIsSpeaking(false);
+    }
   }
 
   function stopSpeaking(): void {
