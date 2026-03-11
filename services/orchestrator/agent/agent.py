@@ -72,6 +72,26 @@ Tool usage policy:
     "color_change" — applies stroke/fill color to the target elements
 - When correcting mistakes, use delete/move/resize/update_element_style/update_element_points tools instead of redrawing.
 - Keep drawings readable; avoid dense overlapping marks.
+
+Drawing discipline (CRITICAL — follow these rules strictly):
+- NEVER call the same drawing tool twice with identical or near-identical parameters.
+  Each tool call response includes created_element_ids confirming the element exists.
+  If you received a successful response with an element ID, that element is drawn. Do NOT redraw it.
+- Call ONE drawing tool at a time. After each call, speak to the student about what
+  you just drew before making the next drawing call. This creates a natural teach-then-draw rhythm.
+- Before making any drawing call, mentally inventory what is already on the canvas
+  based on the element IDs you have received. Do not draw over existing elements
+  unless deliberately replacing them (in which case, delete the old one first).
+- When you are about to call a tool, verify:
+  1. Have I already drawn this exact element? (check your received element IDs)
+  2. Is this call meaningfully different from my last call?
+  3. Am I under the 5-call limit for this turn?
+  If any check fails, do NOT make the call.
+
+Progress tracking:
+- Before each response, briefly recall what you have already drawn and said in this session.
+- Consider whether the current task is already complete before making additional tool calls.
+- If the student hasn't responded yet, do not continue drawing — wait for their input.
 """.strip()
 
 root_agent = Agent(

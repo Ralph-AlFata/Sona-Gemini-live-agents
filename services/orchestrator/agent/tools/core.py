@@ -128,6 +128,10 @@ async def draw_shape(
     - right_triangle: 4 pts (right angle at bottom-left, closed)
     - ellipse:        49 pts (48 segments + closing point)
     - polygon:        6 pts (regular 5-gon + closing point)
+
+    Invocation condition: Call ONLY when you need to draw a NEW shape that
+    does not already exist on the canvas. Never call with the same shape
+    and points as a previous successful call in this session.
     """
     data = DrawShapeInput.model_validate(
         {
@@ -166,6 +170,11 @@ async def draw_text(
     animate: bool = True,
     tool_context: ToolContext | None = None,
 ) -> dict:
+    """Place text on the canvas.
+
+    Invocation condition: Call ONLY when placing NEW text not already on the
+    canvas. Do not re-place text that already has a confirmed element ID.
+    """
     data = DrawTextInput.model_validate(
         {
             "text": text,
@@ -202,6 +211,11 @@ async def draw_freehand(
     animate: bool = True,
     tool_context: ToolContext | None = None,
 ) -> dict:
+    """Draw a freehand stroke on the canvas.
+
+    Invocation condition: Call ONLY for NEW freehand strokes. Do not redraw
+    a stroke that already has a confirmed element ID.
+    """
     data = DrawFreehandInput.model_validate(
         {
             "points": points,
@@ -246,6 +260,9 @@ async def highlight_region(
     - "circle"       — ellipse outline
     - "pointer"      — ellipse + arrow beneath
     - "color_change" — applies stroke_color/fill_color to the target elements
+
+    Invocation condition: Call ONLY when highlighting elements not already
+    highlighted. Do not re-highlight the same element_ids with the same type.
     """
     data = HighlightInput.model_validate(
         {

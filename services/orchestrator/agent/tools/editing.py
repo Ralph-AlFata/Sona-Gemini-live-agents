@@ -16,6 +16,11 @@ from agent.tools.models import (
 
 
 async def delete_elements(element_ids: list[str], tool_context: ToolContext | None = None) -> dict:
+    """Delete elements from the canvas by ID.
+
+    Invocation condition: Call ONLY with element IDs confirmed to exist from
+    previous tool call responses. Do not call repeatedly with the same IDs.
+    """
     data = DeleteElementsInput.model_validate({"element_ids": element_ids})
     result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
@@ -54,6 +59,11 @@ async def move_elements(
     dy: float,
     tool_context: ToolContext | None = None,
 ) -> dict:
+    """Move elements by a delta offset.
+
+    Invocation condition: Call ONLY when repositioning is needed. Do not call
+    repeatedly with the same element_ids and dx/dy.
+    """
     data = MoveElementsInput.model_validate({"element_ids": element_ids, "dx": dx, "dy": dy})
     result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
