@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import time
+
 from google.adk.tools import ToolContext
 
 from config import settings
 from drawing_client import DrawingClient, DrawingCommandResult
 
 _client: DrawingClient | None = None
+logger = logging.getLogger(__name__)
 
 
 def get_client() -> DrawingClient:
@@ -34,3 +39,50 @@ def result_to_dict(result: DrawingCommandResult) -> dict:
         "created_element_ids": result.created_element_ids,
         "failed_operations": result.failed_operations,
     }
+
+
+def _payload_preview(payload: dict) -> str:
+    return json.dumps(payload, sort_keys=True)[:1000]
+
+
+async def execute_tool_command(
+    *,
+    session_id: str,
+    operation: str,
+    payload: dict,
+) -> DrawingCommandResult:
+    start = time.perf_counter()
+    logger.info(
+        "TOOL_CALL_REQUEST session_id=%s operation=%s payload=%s",
+        session_id,
+        operation,
+        _payload_preview(payload),
+    )
+    try:
+        result = await get_client().execute(
+            session_id=session_id,
+            operation=operation,
+            payload=payload,
+        )
+    except Exception:
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        logger.exception(
+            "TOOL_CALL_ERROR session_id=%s operation=%s elapsed_ms=%s",
+            session_id,
+            operation,
+            elapsed_ms,
+        )
+        raise
+
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    logger.info(
+        "TOOL_CALL_RESPONSE session_id=%s operation=%s elapsed_ms=%s command_id=%s applied_count=%s created=%s failed=%s",
+        session_id,
+        operation,
+        elapsed_ms,
+        result.command_id,
+        result.applied_count,
+        len(result.created_element_ids),
+        len(result.failed_operations),
+    )
+    return result

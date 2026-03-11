@@ -7,7 +7,7 @@ import math
 from google.adk.tools import ToolContext
 from sympy import Symbol, lambdify, sympify
 
-from agent.tools._shared import get_client, resolve_session_id
+from agent.tools._shared import execute_tool_command, resolve_session_id
 from agent.tools.core import shape_to_points
 
 
@@ -31,7 +31,7 @@ async def draw_axes_grid(
         raise ValueError("y_max must be greater than y_min")
 
     grid_lines = max(2, min(30, grid_lines))
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="set_graph_viewport",
         payload={
@@ -77,13 +77,12 @@ async def draw_number_line(
         raise ValueError("max_value must be greater than min_value")
 
     session_id = resolve_session_id(tool_context)
-    client = get_client()
     created: list[str] = []
 
-    base = await client.execute(
-        session_id,
-        "draw_shape",
-        {
+    base = await execute_tool_command(
+        session_id=session_id,
+        operation="draw_shape",
+        payload={
             "shape": "line",
             "points": shape_to_points("line", x, y, width, 0.0),
             "style": {"stroke_color": "#111", "stroke_width": 2.0},
@@ -95,10 +94,10 @@ async def draw_number_line(
     step = width / count
     for i, value in enumerate(range(min_value, max_value + 1)):
         tx = x + (i * step)
-        tick = await client.execute(
-            session_id,
-            "draw_shape",
-            {
+        tick = await execute_tool_command(
+            session_id=session_id,
+            operation="draw_shape",
+            payload={
                 "shape": "line",
                 "points": shape_to_points("line", tx, y - (tick_height / 2), 0.0, tick_height),
                 "style": {"stroke_color": "#111", "stroke_width": 2.0},
@@ -106,10 +105,10 @@ async def draw_number_line(
         )
         created.extend(tick.created_element_ids)
 
-        label = await client.execute(
-            session_id,
-            "draw_text",
-            {
+        label = await execute_tool_command(
+            session_id=session_id,
+            operation="draw_text",
+            payload={
                 "text": str(value),
                 "x": max(0.0, tx - 0.01),
                 "y": min(1.0, y + 0.015),
@@ -182,7 +181,7 @@ async def plot_function_2d(
             "failed_operations": [{"element_id": None, "reason": "no plottable points in range"}],
         }
 
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="draw_freehand",
         payload={

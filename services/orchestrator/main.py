@@ -7,10 +7,11 @@ import base64
 import json
 import logging
 import os
+import time
 import warnings
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -32,6 +33,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
+
+
+def _sanitize_event_for_log(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"data", "audio", "bytes"} and isinstance(item, str):
+                sanitized[key] = f"<omitted:{len(item)} chars>"
+            else:
+                sanitized[key] = _sanitize_event_for_log(item)
+        return sanitized
+    if isinstance(value, set):
+        return [_sanitize_event_for_log(item) for item in sorted(value, key=lambda x: str(x))]
+    if isinstance(value, tuple):
+        return [_sanitize_event_for_log(item) for item in value]
+    if isinstance(value, list):
+        return [_sanitize_event_for_log(item) for item in value]
+    if isinstance(value, bytes):
+        return f"<bytes:{len(value)}>"
+    return value
+
+
+def _extract_text_parts(event_payload: dict[str, Any]) -> list[str]:
+    content = event_payload.get("content")
+    if not isinstance(content, dict):
+        return []
+    parts = content.get("parts")
+    if not isinstance(parts, list):
+        return []
+    texts: list[str] = []
+    for part in parts:
+        if isinstance(part, dict):
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                texts.append(text.strip())
+    return texts
 
 @dataclass(slots=True)
 class LiveRuntime:
@@ -193,6 +230,7 @@ async def websocket_endpoint(
         affective_dialog: Enable affective dialog (native audio models only)
     """
     await websocket.accept()
+    logger.info("LIVE_WS_CONNECTED user_id=%s session_id=%s", user_id, session_id)
 
     if not getattr(app.state, "live_uses_gemini", False):
         await websocket.send_json(
@@ -211,14 +249,126 @@ async def websocket_endpoint(
 
     # TODO: Double check here if the actual runtime is being updated globally, or it's just inside the function and then it's dropping
     await _ensure_adk_session(runtime, user_id=user_id, session_id=session_id)
-    live_request_queue = LiveRequestQueue()
     run_config = _build_live_run_config(
         proactivity=proactivity,
         affective_dialog=affective_dialog,
     )
+    turn_state_lock = asyncio.Lock()
+    live_request_queue: LiveRequestQueue | None = None
+    live_task: asyncio.Task[None] | None = None
+    turn_counter = 0
+    stream_start = time.perf_counter()
+    event_index = 0
+
+    async def stop_current_turn(reason: str) -> None:
+        nonlocal live_request_queue, live_task
+        async with turn_state_lock:
+            queue = live_request_queue
+            task = live_task
+            live_request_queue = None
+            live_task = None
+
+        if queue is not None:
+            logger.info("LIVE_TURN_STOP session_id=%s reason=%s", session_id, reason)
+            queue.close()
+
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+
+    async def start_new_turn(trigger: str) -> LiveRequestQueue:
+        nonlocal turn_counter, live_request_queue, live_task
+        await stop_current_turn(reason=f"restart_for_{trigger}")
+
+        turn_counter += 1
+        turn_id = turn_counter
+        queue = LiveRequestQueue()
+
+        async def downstream_for_turn(active_queue: LiveRequestQueue, active_turn_id: int) -> None:
+            nonlocal event_index, live_request_queue, live_task
+            try:
+                async for event in runtime.runner.run_live(
+                    user_id=user_id,
+                    session_id=session_id,
+                    live_request_queue=active_queue,
+                    run_config=run_config,
+                ):
+                    event_index += 1
+                    elapsed_ms = int((time.perf_counter() - stream_start) * 1000)
+                    function_calls: list[str] = []
+                    if hasattr(event, "get_function_calls"):
+                        raw_calls = event.get_function_calls()
+                        for call in raw_calls:
+                            name = getattr(call, "name", None)
+                            if isinstance(name, str):
+                                function_calls.append(name)
+
+                    event_payload = event.model_dump(exclude_none=True, by_alias=True)
+                    text_parts = _extract_text_parts(event_payload)
+                    logger.info(
+                        "LIVE_EVENT session_id=%s turn_id=%s idx=%s t_plus_ms=%s function_calls=%s text_parts=%s turn_complete=%s interrupted=%s",
+                        session_id,
+                        active_turn_id,
+                        event_index,
+                        elapsed_ms,
+                        function_calls,
+                        text_parts,
+                        event_payload.get("turnComplete"),
+                        event_payload.get("interrupted"),
+                    )
+                    logger.info(
+                        "LIVE_EVENT_RAW session_id=%s turn_id=%s idx=%s payload=%s",
+                        session_id,
+                        active_turn_id,
+                        event_index,
+                        json.dumps(
+                            _sanitize_event_for_log(event_payload),
+                            ensure_ascii=False,
+                            default=str,
+                        )[:4000],
+                    )
+
+                    event_json = event.model_dump_json(exclude_none=True, by_alias=True)
+                    logger.debug(f"[SERVER] Event: {event_json}")
+                    await websocket.send_text(event_json)
+
+                    if event_payload.get("turnComplete") is True:
+                        await stop_current_turn(reason="turn_complete")
+                        return
+            except Exception as exc:
+                logger.exception(
+                    "LIVE_TURN_DOWNSTREAM_ERROR session_id=%s turn_id=%s: %s",
+                    session_id,
+                    active_turn_id,
+                    exc,
+                )
+            finally:
+                async with turn_state_lock:
+                    if live_request_queue is active_queue:
+                        live_request_queue = None
+                    if live_task is asyncio.current_task():
+                        live_task = None
+                logger.info(
+                    "LIVE_TURN_DOWNSTREAM_EXIT session_id=%s turn_id=%s",
+                    session_id,
+                    active_turn_id,
+                )
+
+        task = asyncio.create_task(downstream_for_turn(queue, turn_id))
+        async with turn_state_lock:
+            live_request_queue = queue
+            live_task = task
+
+        logger.info(
+            "LIVE_TURN_STARTED session_id=%s turn_id=%s trigger=%s",
+            session_id,
+            turn_id,
+            trigger,
+        )
+        return queue
 
     async def upstream_task() -> None:
-        """Receives messages from WebSocket and sends to LiveRequestQueue.
+        """Receives messages from WebSocket and sends to the current turn queue.
 
         Supports manual turn control via JSON control messages:
           {"type": "activity_start"}  — user started speaking
@@ -234,43 +384,50 @@ async def websocket_endpoint(
                 if not is_speaking:
                     continue
                 audio_data = message["bytes"]
+                logger.info(
+                    "LIVE_UPSTREAM_AUDIO_CHUNK session_id=%s bytes=%s",
+                    session_id,
+                    len(audio_data),
+                )
                 audio_blob = types.Blob(
                     mime_type="audio/pcm;rate=16000", data=audio_data
                 )
-                live_request_queue.send_realtime(audio_blob)
+                async with turn_state_lock:
+                    queue = live_request_queue
+                if queue is not None:
+                    queue.send_realtime(audio_blob)
 
             elif "text" in message:
+                raw_text = message.get("text")
+                logger.info(
+                    "LIVE_UPSTREAM_TEXT session_id=%s raw=%s",
+                    session_id,
+                    str(raw_text)[:500],
+                )
                 try:
-                    json_message = json.loads(message["text"])
+                    json_message = json.loads(raw_text)
                 except (json.JSONDecodeError, TypeError):
+                    logger.warning("LIVE_UPSTREAM_TEXT_PARSE_FAILED session_id=%s", session_id)
                     continue
 
                 msg_type = json_message.get("type")
 
                 if msg_type == "activity_start":
                     is_speaking = True
-                    live_request_queue.send_activity_start()
-                    logger.debug("Activity start signalled")
+                    queue = await start_new_turn(trigger="activity_start")
+                    queue.send_activity_start()
+                    logger.info("LIVE_ACTIVITY_START session_id=%s", session_id)
 
                 elif msg_type == "activity_end":
                     is_speaking = False
-                    live_request_queue.send_activity_end()
-                    logger.debug("Activity end signalled")
-        
-
-    async def downstream_task() -> None:
-        async for event in runtime.runner.run_live(
-            user_id=user_id,
-            session_id=session_id,
-            live_request_queue=live_request_queue,
-            run_config=run_config,
-        ):
-            event_json = event.model_dump_json(exclude_none=True, by_alias=True)
-            logger.debug(f"[SERVER] Event: {event_json}")
-            await websocket.send_text(event_json)
+                    async with turn_state_lock:
+                        queue = live_request_queue
+                    if queue is not None:
+                        queue.send_activity_end()
+                    logger.info("LIVE_ACTIVITY_END session_id=%s", session_id)
 
     try:
-        await asyncio.gather(upstream_task(), downstream_task())
+        await upstream_task()
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected user_id=%s session_id=%s", user_id, session_id)
     except Exception as exc:
@@ -281,4 +438,4 @@ async def websocket_endpoint(
             exc,
         )
     finally:
-        live_request_queue.close()
+        await stop_current_turn(reason="websocket_closed")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent.tools import core, editing, math_helpers
+from agent.tools import _shared, core, editing, math_helpers
 from agent.tools.models import DrawShapeInput, HighlightInput
 
 
@@ -38,7 +38,7 @@ class FakeClient:
 @pytest.mark.asyncio
 async def test_draw_shape_maps_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeClient()
-    monkeypatch.setattr(core, "get_client", lambda: fake)
+    monkeypatch.setattr(_shared, "get_client", lambda: fake)
     monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_test")
 
     result = await core.draw_shape(
@@ -63,7 +63,7 @@ async def test_draw_shape_maps_payload(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.asyncio
 async def test_plot_function_no_points_returns_error(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeClient()
-    monkeypatch.setattr(math_helpers, "get_client", lambda: fake)
+    monkeypatch.setattr(_shared, "get_client", lambda: fake)
     monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
 
     result = await math_helpers.plot_function_2d(
@@ -83,7 +83,7 @@ async def test_plot_function_no_points_returns_error(monkeypatch: pytest.MonkeyP
 @pytest.mark.asyncio
 async def test_draw_axes_grid_uses_viewport_command(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeClient()
-    monkeypatch.setattr(math_helpers, "get_client", lambda: fake)
+    monkeypatch.setattr(_shared, "get_client", lambda: fake)
     monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
 
     result = await math_helpers.draw_axes_grid(
@@ -108,7 +108,7 @@ async def test_draw_axes_grid_uses_viewport_command(monkeypatch: pytest.MonkeyPa
 @pytest.mark.asyncio
 async def test_update_element_points_maps_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeClient()
-    monkeypatch.setattr(editing, "get_client", lambda: fake)
+    monkeypatch.setattr(_shared, "get_client", lambda: fake)
     monkeypatch.setattr(editing, "resolve_session_id", lambda _ctx: "s_test")
 
     result = await editing.update_element_points(

@@ -6,7 +6,7 @@ import math
 
 from google.adk.tools import ToolContext
 
-from agent.tools._shared import get_client, resolve_session_id, result_to_dict
+from agent.tools._shared import execute_tool_command, resolve_session_id, result_to_dict
 from agent.tools.models import DrawFreehandInput, DrawShapeInput, DrawTextInput, HighlightInput
 
 
@@ -144,7 +144,7 @@ async def draw_shape(
             },
         }
     )
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="draw_shape",
         payload=data.model_dump(mode="json"),
@@ -183,7 +183,7 @@ async def draw_text(
             },
         }
     )
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="draw_text",
         payload=data.model_dump(mode="json"),
@@ -216,7 +216,7 @@ async def draw_freehand(
             },
         }
     )
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="draw_freehand",
         payload=data.model_dump(mode="json"),
@@ -263,7 +263,7 @@ async def highlight_region(
             },
         }
     )
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="highlight_region",
         payload=data.model_dump(mode="json"),
@@ -272,7 +272,7 @@ async def highlight_region(
 
 
 async def clear_canvas(tool_context: ToolContext | None = None) -> dict:
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="clear_canvas",
         payload={"mode": "full"},
