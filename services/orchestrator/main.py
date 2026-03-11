@@ -358,6 +358,8 @@ async def websocket_endpoint(
         async def downstream_for_turn(active_queue: LiveRequestQueue, active_turn_id: int) -> None:
             nonlocal event_index, live_request_queue, live_task
             has_spoken_this_turn = False
+            saw_tool_call_since_turn_complete = False
+            saw_output_since_turn_complete = False
             try:
                 async for event in runtime.runner.run_live(
                     user_id=user_id,
@@ -379,6 +381,10 @@ async def websocket_endpoint(
                     if _has_audio_output(event_payload) or _has_nonempty_output_transcription(event_payload):
                         has_spoken_this_turn = True
                     text_parts = _extract_text_parts(event_payload)
+                    if function_calls:
+                        saw_tool_call_since_turn_complete = True
+                    if _has_nonempty_output_transcription(event_payload) or text_parts:
+                        saw_output_since_turn_complete = True
                     is_audio_only = _is_audio_only_event(event_payload)
                     if not is_audio_only:
                         logger.info(
@@ -417,14 +423,37 @@ async def websocket_endpoint(
                     await websocket.send_text(event_json)
 
                     if event_payload.get("turnComplete") is True:
-                        if has_spoken_this_turn:
-                            await stop_current_turn(reason="turn_complete_with_output", wait_for_drain=False)
+                        if not has_spoken_this_turn and not saw_tool_call_since_turn_complete:
+                            logger.info(
+                                "LIVE_TURN_COMPLETE_DEFER_CLOSE session_id=%s turn_id=%s reason=no_model_output_yet",
+                                session_id,
+                                active_turn_id,
+                            )
+                            continue
+
+                        if saw_tool_call_since_turn_complete:
+                            logger.info(
+                                "LIVE_TURN_COMPLETE_CONTINUE session_id=%s turn_id=%s reason=tool_progress",
+                                session_id,
+                                active_turn_id,
+                            )
+                            saw_tool_call_since_turn_complete = False
+                            saw_output_since_turn_complete = False
+                            continue
+
+                        if saw_output_since_turn_complete:
+                            await stop_current_turn(
+                                reason="turn_complete_no_tool_progress",
+                                wait_for_drain=False,
+                            )
                             return
-                        logger.info(
-                            "LIVE_TURN_COMPLETE_DEFER_CLOSE session_id=%s turn_id=%s reason=no_model_output_yet",
-                            session_id,
-                            active_turn_id,
+
+                        # Defensive close: repeated completion packets with no new progress.
+                        await stop_current_turn(
+                            reason="turn_complete_no_progress",
+                            wait_for_drain=False,
                         )
+                        return
             except Exception as exc:
                 logger.exception(
                     "LIVE_TURN_DOWNSTREAM_ERROR session_id=%s turn_id=%s: %s",
