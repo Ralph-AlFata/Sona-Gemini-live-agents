@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from models import (
     ClearPayload,
@@ -285,6 +288,15 @@ async def apply_command(
     DSL messages are later broadcast over WebSocket to connected frontend clients,
     which render the canvas in real-time based on message type.
     """
+    logger.info(
+        "DSL_APPLY_COMMAND session_id=%s operation=%s command_id=%s element_id=%s payload_type=%s",
+        command.session_id,
+        command.operation,
+        command.command_id,
+        command.element_id,
+        type(command.payload).__name__,
+    )
+
     session_elements = await store.get_all_elements(command.session_id)
     messages: list[DSLMessage] = []
     failures: list[DrawCommandFailure] = []
@@ -310,7 +322,7 @@ async def apply_command(
         applied_count = 1
 
     elif isinstance(payload, DrawShapePayload):
-        element_id = _next_element_id()
+        element_id = command.element_id or _next_element_id()
         draw_payload, bbox = _build_shape_element(payload)
         element = StoredElement(
             element_id=element_id,
@@ -339,7 +351,7 @@ async def apply_command(
         )
 
     elif isinstance(payload, DrawTextPayload):
-        element_id = _next_element_id()
+        element_id = command.element_id or _next_element_id()
         draw_payload, bbox = _build_text_element(payload)
         element = StoredElement(
             element_id=element_id,
@@ -370,7 +382,7 @@ async def apply_command(
         )
 
     elif isinstance(payload, DrawFreehandPayload):
-        element_id = _next_element_id()
+        element_id = command.element_id or _next_element_id()
         draw_payload, bbox = _build_freehand_element(payload)
         element = StoredElement(
             element_id=element_id,
