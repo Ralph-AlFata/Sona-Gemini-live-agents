@@ -23,6 +23,8 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from agent import root_agent
+from agent.tools._batch import pop_batch
+from agent.tools._shared import get_client
 from config import settings
 
 load_dotenv()
@@ -462,6 +464,36 @@ async def websocket_endpoint(
                     exc,
                 )
             finally:
+                # Flush any pending batched draw commands as a single HTTP call.
+                batch = await pop_batch(session_id)
+                if batch is not None:
+                    commands = await batch.drain()
+                    if commands:
+                        logger.info(
+                            "BATCH_FLUSH session_id=%s turn_id=%s commands=%d",
+                            session_id,
+                            active_turn_id,
+                            len(commands),
+                        )
+                        try:
+                            batch_result = await get_client().execute_batch(commands)
+                            logger.info(
+                                "BATCH_FLUSH_OK session_id=%s turn_id=%s applied=%d created=%d failed=%d emitted=%d",
+                                session_id,
+                                active_turn_id,
+                                batch_result.total_applied,
+                                len(batch_result.total_created_element_ids),
+                                batch_result.total_failed,
+                                batch_result.total_emitted,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "BATCH_FLUSH_ERROR session_id=%s turn_id=%s commands=%d",
+                                session_id,
+                                active_turn_id,
+                                len(commands),
+                            )
+
                 async with turn_state_lock:
                     if live_request_queue is active_queue:
                         live_request_queue = None

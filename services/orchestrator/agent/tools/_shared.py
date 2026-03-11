@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 
 from google.adk.tools import ToolContext
 
+from agent.tools._batch import get_or_create_batch
 from agent.tools._dedup import ToolCallDeduplicator
 from config import settings
 from drawing_client import DrawingClient, DrawingCommandResult
@@ -63,6 +63,13 @@ async def execute_tool_command(
     operation: str,
     payload: dict,
 ) -> DrawingCommandResult:
+    """Queue a drawing command into the per-session batch.
+
+    Commands are not sent immediately. Instead they accumulate and are
+    flushed as a single ``POST /draw/batch`` call when the model turn ends.
+    A synthetic result with pre-generated element IDs is returned so that
+    Gemini can reference them in subsequent tool calls within the same turn.
+    """
     # --- Deduplication check ---
     dedup = _get_deduplicator()
     cached = await dedup.get(session_id, operation, payload)
@@ -75,42 +82,17 @@ async def execute_tool_command(
         )
         return cached
 
-    start = time.perf_counter()
     logger.info(
-        "TOOL_CALL_REQUEST session_id=%s operation=%s payload=%s",
+        "TOOL_CALL_QUEUE session_id=%s operation=%s payload=%s",
         session_id,
         operation,
         _payload_preview(payload),
     )
-    try:
-        result = await get_client().execute(
-            session_id=session_id,
-            operation=operation,
-            payload=payload,
-        )
-    except Exception:
-        elapsed_ms = int((time.perf_counter() - start) * 1000)
-        logger.exception(
-            "TOOL_CALL_ERROR session_id=%s operation=%s elapsed_ms=%s",
-            session_id,
-            operation,
-            elapsed_ms,
-        )
-        raise
 
-    elapsed_ms = int((time.perf_counter() - start) * 1000)
-    logger.info(
-        "TOOL_CALL_RESPONSE session_id=%s operation=%s elapsed_ms=%s command_id=%s applied_count=%s created=%s failed=%s",
-        session_id,
-        operation,
-        elapsed_ms,
-        result.command_id,
-        result.applied_count,
-        len(result.created_element_ids),
-        len(result.failed_operations),
-    )
+    batch = await get_or_create_batch(session_id)
+    result = await batch.queue(operation, payload)
 
-    # --- Cache successful result for dedup ---
+    # --- Cache result for dedup (uses the pre-generated element IDs) ---
     await dedup.put(session_id, operation, payload, result)
 
     return result

@@ -250,6 +250,7 @@ class DrawCommandRequest(_StrictBase):
     operation: DrawOperation
     session_id: str = Field(min_length=1, max_length=128)
     payload: DrawPayload
+    element_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="before")
     @classmethod
@@ -316,6 +317,23 @@ class DrawResponse(_StrictBase):
     created_element_ids: list[str] = Field(default_factory=list)
     failed_operations: list[DrawCommandFailure] = Field(default_factory=list)
     emitted_count: int = Field(ge=0)
+
+
+class BatchDrawRequest(_StrictBase):
+    """A batch of draw commands to apply sequentially in a single HTTP call."""
+
+    commands: list[DrawCommandRequest] = Field(min_length=1, max_length=200)
+
+
+class BatchDrawResponse(_StrictBase):
+    """Aggregated response for a batch of draw commands."""
+
+    session_id: str
+    results: list[DrawResponse]
+    total_applied: int = Field(ge=0)
+    total_created_element_ids: list[str] = Field(default_factory=list)
+    total_failed: int = Field(ge=0)
+    total_emitted: int = Field(ge=0)
 
 
 class ClearRequest(_StrictBase):
