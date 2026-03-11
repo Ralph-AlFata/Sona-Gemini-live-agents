@@ -8,10 +8,12 @@ import time
 
 from google.adk.tools import ToolContext
 
+from agent.tools._dedup import ToolCallDeduplicator
 from config import settings
 from drawing_client import DrawingClient, DrawingCommandResult
 
 _client: DrawingClient | None = None
+_deduplicator: ToolCallDeduplicator | None = None
 logger = logging.getLogger(__name__)
 
 
@@ -20,6 +22,16 @@ def get_client() -> DrawingClient:
     if _client is None:
         _client = DrawingClient(settings.drawing_service_url)
     return _client
+
+
+def _get_deduplicator() -> ToolCallDeduplicator:
+    global _deduplicator
+    if _deduplicator is None:
+        _deduplicator = ToolCallDeduplicator(
+            window_seconds=settings.dedup_window_seconds,
+            max_entries=settings.dedup_max_entries,
+        )
+    return _deduplicator
 
 
 def resolve_session_id(tool_context: ToolContext | None) -> str:
@@ -51,6 +63,18 @@ async def execute_tool_command(
     operation: str,
     payload: dict,
 ) -> DrawingCommandResult:
+    # --- Deduplication check ---
+    dedup = _get_deduplicator()
+    cached = await dedup.get(session_id, operation, payload)
+    if cached is not None:
+        logger.warning(
+            "TOOL_CALL_DEDUP session_id=%s operation=%s payload=%s",
+            session_id,
+            operation,
+            _payload_preview(payload),
+        )
+        return cached
+
     start = time.perf_counter()
     logger.info(
         "TOOL_CALL_REQUEST session_id=%s operation=%s payload=%s",
@@ -85,4 +109,8 @@ async def execute_tool_command(
         len(result.created_element_ids),
         len(result.failed_operations),
     )
+
+    # --- Cache successful result for dedup ---
+    await dedup.put(session_id, operation, payload, result)
+
     return result

@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     default_session_id: str = "local-session"
     session_service_url: str = "http://session:8003"
     drawing_service_url: str = "http://drawing:8002"
+    dedup_window_seconds: float = 2.0
+    dedup_max_entries: int = 200
 
     model_config = SettingsConfigDict(
         env_file=".env",
