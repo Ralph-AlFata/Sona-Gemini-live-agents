@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from google.adk.tools import ToolContext
 
-from agent.tools._shared import get_client, resolve_session_id, result_to_dict
+from agent.tools._shared import execute_tool_command, resolve_session_id, result_to_dict
 from agent.tools.models import (
     DeleteElementsInput,
     EraseRegionInput,
@@ -17,7 +17,7 @@ from agent.tools.models import (
 
 async def delete_elements(element_ids: list[str], tool_context: ToolContext | None = None) -> dict:
     data = DeleteElementsInput.model_validate({"element_ids": element_ids})
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="delete_elements",
         payload=data.model_dump(mode="json"),
@@ -40,7 +40,7 @@ async def erase_region(
             "height": height,
         }
     )
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="erase_region",
         payload=data.model_dump(mode="json"),
@@ -55,7 +55,7 @@ async def move_elements(
     tool_context: ToolContext | None = None,
 ) -> dict:
     data = MoveElementsInput.model_validate({"element_ids": element_ids, "dx": dx, "dy": dy})
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="move_elements",
         payload=data.model_dump(mode="json"),
@@ -72,7 +72,7 @@ async def resize_elements(
     data = ResizeElementsInput.model_validate(
         {"element_ids": element_ids, "scale_x": scale_x, "scale_y": scale_y}
     )
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="resize_elements",
         payload=data.model_dump(mode="json"),
@@ -93,7 +93,7 @@ async def update_element_points(
             "mode": mode,
         }
     )
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="update_points",
         payload=data.model_dump(mode="json"),
@@ -122,7 +122,7 @@ async def update_element_style(
             "delay_ms": delay_ms,
         }
     )
-    result = await get_client().execute(
+    result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="update_style",
         payload=data.model_dump(mode="json"),
