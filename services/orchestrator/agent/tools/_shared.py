@@ -9,6 +9,7 @@ from uuid import uuid4
 from google.adk.tools import ToolContext
 
 from agent.tools._dedup import ToolCallDeduplicator
+from agent.tools._trace import emit_draw_trace
 from config import settings
 from drawing_client import DrawingClient, DrawingCommandResult
 
@@ -68,6 +69,17 @@ async def execute_tool_command(
     dedup = _get_deduplicator()
     cached = await dedup.get(session_id, operation, payload)
     if cached is not None:
+        emit_draw_trace(
+            {
+                "draw_command_request": {
+                    "command_id": cached.command_id,
+                    "operation": operation,
+                    "session_id": session_id,
+                    "payload": payload,
+                },
+                "dsl_messages": cached.dsl_messages,
+            }
+        )
         logger.warning(
             "TOOL_CALL_DEDUP session_id=%s operation=%s payload=%s",
             session_id,
@@ -87,6 +99,18 @@ async def execute_tool_command(
         operation=operation,
         payload=payload,
         command_id=uuid4().hex[:12],
+    )
+
+    emit_draw_trace(
+        {
+            "draw_command_request": {
+                "command_id": result.command_id,
+                "operation": operation,
+                "session_id": session_id,
+                "payload": payload,
+            },
+            "dsl_messages": result.dsl_messages,
+        }
     )
 
     # --- Cache result for dedup (uses the pre-generated element IDs) ---

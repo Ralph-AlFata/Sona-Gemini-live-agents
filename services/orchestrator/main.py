@@ -11,19 +11,22 @@ import time
 import warnings
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from agent.tools._trace import draw_trace_span
 from agent import root_agent
 from config import settings
+from session_client import SessionServiceClient
 
 load_dotenv()
 
@@ -123,11 +126,13 @@ class LiveRuntime:
 
     runner: Runner
     session_service: InMemorySessionService
+    session_client: SessionServiceClient
 
 
 def build_live_runtime() -> LiveRuntime:
     """Build ADK runtime objects used by Gemini interactions."""
     session_service = InMemorySessionService()
+    session_client = SessionServiceClient(base_url=settings.session_service_url)
     runner = Runner(
         app_name=settings.app_name,
         agent=root_agent,
@@ -136,6 +141,7 @@ def build_live_runtime() -> LiveRuntime:
     return LiveRuntime(
         runner=runner,
         session_service=session_service,
+        session_client=session_client,
     )
 
 
@@ -215,10 +221,34 @@ async def _ensure_adk_session(runtime: LiveRuntime, user_id: str, session_id: st
         state={"session_id": session_id},
     )
 
+
+async def _ensure_persisted_session(runtime: LiveRuntime, user_id: str, session_id: str) -> None:
+    """Ensure the Firestore-backed session document exists in the session service."""
+    existing = await runtime.session_client.get_session(session_id)
+    if existing is not None:
+        return
+    await runtime.session_client.create_session(
+        session_id=session_id,
+        student_id=user_id,
+    )
+
+
+def _extract_finished_transcription(raw_value: Any) -> str | None:
+    if not isinstance(raw_value, dict):
+        return None
+    if raw_value.get("finished") is not True:
+        return None
+    text = raw_value.get("text")
+    if not isinstance(text, str):
+        return None
+    cleaned = text.strip()
+    return cleaned if cleaned else None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.live_uses_gemini = _configure_gemini_environment()
-    app.state.live_runtime = build_live_runtime()
+    live_runtime = build_live_runtime()
+    app.state.live_runtime = live_runtime
 
     logger.info(
         "Orchestrator service startup complete on port %s (chat_mode=%s, live_enabled=%s)",
@@ -227,6 +257,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.live_uses_gemini,
     )
     yield
+    session_client = getattr(live_runtime, "session_client", None)
+    if session_client is not None:
+        await session_client.close()
     logger.info("Orchestrator service shutdown complete")
 
 
@@ -296,6 +329,14 @@ async def websocket_endpoint(
 
     # TODO: Double check here if the actual runtime is being updated globally, or it's just inside the function and then it's dropping
     await _ensure_adk_session(runtime, user_id=user_id, session_id=session_id)
+    try:
+        await _ensure_persisted_session(runtime, user_id=user_id, session_id=session_id)
+    except Exception:
+        logger.exception(
+            "LIVE_PERSISTED_SESSION_INIT_FAILED user_id=%s session_id=%s",
+            user_id,
+            session_id,
+        )
     run_config = _build_live_run_config(
         proactivity=proactivity,
         affective_dialog=affective_dialog,
@@ -306,6 +347,98 @@ async def websocket_endpoint(
     turn_counter = 0
     stream_start = time.perf_counter()
     event_index = 0
+    persist_lock = asyncio.Lock()
+    pending_persist_tasks: set[asyncio.Task[None]] = set()
+    persisted_turn_keys: set[tuple[int, Literal["student", "sona"], str]] = set()
+    turn_draw_activity: dict[int, dict[str, list[dict[str, Any]]]] = {}
+
+    def _track_persist_task(task: asyncio.Task[None]) -> None:
+        pending_persist_tasks.add(task)
+        task.add_done_callback(lambda done: pending_persist_tasks.discard(done))
+
+    async def persist_turn(
+        *,
+        turn_id: int,
+        role: Literal["student", "sona"],
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        cleaned = content.strip()
+        if not cleaned:
+            return
+
+        async with persist_lock:
+            dedup_key = (turn_id, role, cleaned)
+            if dedup_key in persisted_turn_keys:
+                return
+            try:
+                await runtime.session_client.append_turn(
+                    session_id=session_id,
+                    role=role,
+                    content=cleaned,
+                    metadata=metadata,
+                )
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if status_code == 404:
+                    logger.warning(
+                        "LIVE_PERSIST_APPEND_MISSING_SESSION session_id=%s role=%s; retrying after create",
+                        session_id,
+                        role,
+                    )
+                    try:
+                        await _ensure_persisted_session(
+                            runtime,
+                            user_id=user_id,
+                            session_id=session_id,
+                        )
+                        await runtime.session_client.append_turn(
+                            session_id=session_id,
+                            role=role,
+                            content=cleaned,
+                            metadata=metadata,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "LIVE_PERSIST_APPEND_RETRY_FAILED session_id=%s role=%s",
+                            session_id,
+                            role,
+                        )
+                        return
+                else:
+                    logger.warning(
+                        "LIVE_PERSIST_APPEND_HTTP_ERROR session_id=%s role=%s status=%s",
+                        session_id,
+                        role,
+                        status_code,
+                    )
+                    return
+            except Exception:
+                logger.exception(
+                    "LIVE_PERSIST_APPEND_FAILED session_id=%s role=%s",
+                    session_id,
+                    role,
+                )
+                return
+
+            persisted_turn_keys.add(dedup_key)
+
+    def _record_draw_trace(turn_id: int, event: dict[str, Any]) -> None:
+        activity = turn_draw_activity.setdefault(
+            turn_id,
+            {
+                "draw_command_requests": [],
+                "dsl_messages": [],
+            },
+        )
+        command_request = event.get("draw_command_request")
+        if isinstance(command_request, dict):
+            activity["draw_command_requests"].append(command_request)
+        dsl_messages = event.get("dsl_messages")
+        if isinstance(dsl_messages, list):
+            activity["dsl_messages"].extend(
+                item for item in dsl_messages if isinstance(item, dict)
+            )
 
     async def stop_current_turn(reason: str, wait_for_drain: bool = True) -> None:
         nonlocal live_request_queue, live_task
@@ -355,75 +488,117 @@ async def websocket_endpoint(
         async def downstream_for_turn(active_queue: LiveRequestQueue, active_turn_id: int) -> None:
             nonlocal event_index, live_request_queue, live_task
             try:
-                async for event in runtime.runner.run_live(
-                    user_id=user_id,
-                    session_id=session_id,
-                    live_request_queue=active_queue,
-                    run_config=run_config,
+                with draw_trace_span(
+                    lambda trace_event: _record_draw_trace(active_turn_id, trace_event)
                 ):
-                    event_index += 1
-                    elapsed_ms = int((time.perf_counter() - stream_start) * 1000)
-                    function_calls: list[str] = []
-                    if hasattr(event, "get_function_calls"):
-                        raw_calls = event.get_function_calls()
-                        for call in raw_calls:
-                            name = getattr(call, "name", None)
-                            if isinstance(name, str):
-                                function_calls.append(name)
+                    async for event in runtime.runner.run_live(
+                        user_id=user_id,
+                        session_id=session_id,
+                        live_request_queue=active_queue,
+                        run_config=run_config,
+                    ):
+                        event_index += 1
+                        elapsed_ms = int((time.perf_counter() - stream_start) * 1000)
+                        function_calls: list[str] = []
+                        if hasattr(event, "get_function_calls"):
+                            raw_calls = event.get_function_calls()
+                            for call in raw_calls:
+                                name = getattr(call, "name", None)
+                                if isinstance(name, str):
+                                    function_calls.append(name)
 
-                    event_payload = event.model_dump(exclude_none=True, by_alias=True)
-                    text_parts = _extract_text_parts(event_payload)
-                    is_audio_only = _is_audio_only_event(event_payload)
-                    if not is_audio_only:
-                        logger.info(
-                            "LIVE_EVENT session_id=%s turn_id=%s idx=%s t_plus_ms=%s function_calls=%s text_parts=%s interrupted=%s",
-                            session_id,
-                            active_turn_id,
-                            event_index,
-                            elapsed_ms,
-                            function_calls,
-                            text_parts,
-                            event_payload.get("interrupted"),
+                        event_payload = event.model_dump(exclude_none=True, by_alias=True)
+                        user_text = _extract_finished_transcription(
+                            event_payload.get("inputTranscription")
                         )
-                        logger.info(
-                            "LIVE_EVENT_RAW session_id=%s turn_id=%s idx=%s payload=%s",
-                            session_id,
-                            active_turn_id,
-                            event_index,
-                            json.dumps(
-                                _sanitize_event_for_log(event_payload),
-                                ensure_ascii=False,
-                                default=str,
-                            )[:4000],
+                        if user_text:
+                            _track_persist_task(
+                                asyncio.create_task(
+                                    persist_turn(
+                                        turn_id=active_turn_id,
+                                        role="student",
+                                        content=user_text,
+                                    )
+                                )
+                            )
+
+                        assistant_text = _extract_finished_transcription(
+                            event_payload.get("outputTranscription")
                         )
-                        usage = event_payload.get("usageMetadata")
-                        if isinstance(usage, dict):
-                            prompt_tokens = usage.get("promptTokenCount")
-                            total_tokens = usage.get("totalTokenCount")
-                            output_tokens = None
-                            if isinstance(prompt_tokens, int) and isinstance(total_tokens, int):
-                                output_tokens = total_tokens - prompt_tokens
+                        if assistant_text:
+                            draw_activity = turn_draw_activity.pop(active_turn_id, None)
+                            metadata = (
+                                draw_activity
+                                if draw_activity
+                                and (
+                                    draw_activity["draw_command_requests"]
+                                    or draw_activity["dsl_messages"]
+                                )
+                                else None
+                            )
+                            _track_persist_task(
+                                asyncio.create_task(
+                                    persist_turn(
+                                        turn_id=active_turn_id,
+                                        role="sona",
+                                        content=assistant_text,
+                                        metadata=metadata,
+                                    )
+                                )
+                            )
+
+                        text_parts = _extract_text_parts(event_payload)
+                        is_audio_only = _is_audio_only_event(event_payload)
+                        if not is_audio_only:
                             logger.info(
-                                "LIVE_USAGE session_id=%s turn_id=%s idx=%s prompt_tokens=%s total_tokens=%s output_tokens=%s",
+                                "LIVE_EVENT session_id=%s turn_id=%s idx=%s t_plus_ms=%s function_calls=%s text_parts=%s interrupted=%s",
                                 session_id,
                                 active_turn_id,
                                 event_index,
-                                prompt_tokens,
-                                total_tokens,
-                                output_tokens,
+                                elapsed_ms,
+                                function_calls,
+                                text_parts,
+                                event_payload.get("interrupted"),
                             )
-                    elif event_index % DOWNSTREAM_AUDIO_EVENT_LOG_EVERY_N_EVENTS == 0:
-                        logger.debug(
-                            "LIVE_EVENT_AUDIO_SAMPLE session_id=%s turn_id=%s idx=%s t_plus_ms=%s",
-                            session_id,
-                            active_turn_id,
-                            event_index,
-                            elapsed_ms,
-                        )
+                            logger.info(
+                                "LIVE_EVENT_RAW session_id=%s turn_id=%s idx=%s payload=%s",
+                                session_id,
+                                active_turn_id,
+                                event_index,
+                                json.dumps(
+                                    _sanitize_event_for_log(event_payload),
+                                    ensure_ascii=False,
+                                    default=str,
+                                )[:4000],
+                            )
+                            usage = event_payload.get("usageMetadata")
+                            if isinstance(usage, dict):
+                                prompt_tokens = usage.get("promptTokenCount")
+                                total_tokens = usage.get("totalTokenCount")
+                                output_tokens = None
+                                if isinstance(prompt_tokens, int) and isinstance(total_tokens, int):
+                                    output_tokens = total_tokens - prompt_tokens
+                                logger.info(
+                                    "LIVE_USAGE session_id=%s turn_id=%s idx=%s prompt_tokens=%s total_tokens=%s output_tokens=%s",
+                                    session_id,
+                                    active_turn_id,
+                                    event_index,
+                                    prompt_tokens,
+                                    total_tokens,
+                                    output_tokens,
+                                )
+                        elif event_index % DOWNSTREAM_AUDIO_EVENT_LOG_EVERY_N_EVENTS == 0:
+                            logger.debug(
+                                "LIVE_EVENT_AUDIO_SAMPLE session_id=%s turn_id=%s idx=%s t_plus_ms=%s",
+                                session_id,
+                                active_turn_id,
+                                event_index,
+                                elapsed_ms,
+                            )
 
-                    event_json = event.model_dump_json(exclude_none=True, by_alias=True)
-                    logger.debug(f"[SERVER] Event: {event_json}")
-                    await websocket.send_text(event_json)
+                        event_json = event.model_dump_json(exclude_none=True, by_alias=True)
+                        logger.debug(f"[SERVER] Event: {event_json}")
+                        await websocket.send_text(event_json)
             except Exception as exc:
                 logger.exception(
                     "LIVE_TURN_DOWNSTREAM_ERROR session_id=%s turn_id=%s: %s",
@@ -432,6 +607,7 @@ async def websocket_endpoint(
                     exc,
                 )
             finally:
+                turn_draw_activity.pop(active_turn_id, None)
                 async with turn_state_lock:
                     if live_request_queue is active_queue:
                         live_request_queue = None
@@ -582,3 +758,10 @@ async def websocket_endpoint(
         )
     finally:
         await stop_current_turn(reason="websocket_closed", wait_for_drain=True)
+        if pending_persist_tasks:
+            done, pending = await asyncio.wait(pending_persist_tasks, timeout=2.0)
+            for task in pending:
+                task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                for task in done:
+                    await task

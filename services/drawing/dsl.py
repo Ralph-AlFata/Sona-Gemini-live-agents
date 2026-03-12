@@ -726,5 +726,6 @@ async def apply_command(
             created_element_ids=created_element_ids,
             failed_operations=failures,
             emitted_count=len(messages),
+            dsl_messages=messages,
         ),
     )

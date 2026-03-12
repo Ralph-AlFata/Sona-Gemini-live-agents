@@ -2,7 +2,8 @@
 Pydantic v2 models for the Sona Session Service.
 
 Session document structure in Firestore:
-    sessions/{session_id} → Session (embedded ConversationTurn list, latest CanvasSnapshot)
+    sessions/{session_id} → summary document (status, timestamps, latest snapshot)
+    sessions/{session_id}/turns/{turn_id} → ConversationTurn document
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ class ConversationTurn(_StrictBase):
     turn_id: str = Field(default_factory=lambda: uuid4().hex)
     role: Literal["student", "sona"]
     content: str = Field(min_length=1, max_length=8_000)
+    metadata: dict[str, object] | None = None
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(tz=timezone.utc)
     )
@@ -44,6 +46,7 @@ class ConversationTurn(_StrictBase):
             "turn_id": self.turn_id,
             "role": self.role,
             "content": self.content,
+            "metadata": self.metadata,
             "timestamp": self.timestamp.isoformat(),
         }
 
@@ -88,6 +91,12 @@ class CanvasSnapshot(_StrictBase):
 class SessionCreate(_StrictBase):
     """Request body for POST /sessions."""
 
+    session_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        description="Optional caller-supplied session identifier",
+    )
     student_id: str = Field(
         default_factory=lambda: f"student_{uuid4().hex[:8]}",
         description="Caller-supplied or auto-generated student identifier",
@@ -112,6 +121,8 @@ class Session(_StrictBase):
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(tz=timezone.utc)
     )
+    turn_count: int = Field(default=0, ge=0)
+    last_turn_at: datetime | None = None
     turns: list[ConversationTurn] = Field(default_factory=list)
     latest_snapshot: CanvasSnapshot | None = None
 
@@ -123,7 +134,35 @@ class Session(_StrictBase):
             "status": self.status,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
+            "turn_count": self.turn_count,
+            "last_turn_at": (
+                self.last_turn_at.isoformat()
+                if self.last_turn_at is not None
+                else None
+            ),
             "turns": [t.to_firestore_dict() for t in self.turns],
+            "latest_snapshot": (
+                self.latest_snapshot.to_firestore_dict()
+                if self.latest_snapshot
+                else None
+            ),
+        }
+
+    def to_firestore_summary_dict(self) -> dict[str, object]:
+        """Session summary fields persisted on the root session document."""
+        return {
+            "session_id": self.session_id,
+            "student_id": self.student_id,
+            "topic": self.topic,
+            "status": self.status,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "turn_count": self.turn_count,
+            "last_turn_at": (
+                self.last_turn_at.isoformat()
+                if self.last_turn_at is not None
+                else None
+            ),
             "latest_snapshot": (
                 self.latest_snapshot.to_firestore_dict()
                 if self.latest_snapshot
@@ -144,6 +183,11 @@ class Session(_StrictBase):
                 return datetime.fromisoformat(val)
             raise ValueError(f"Unexpected timestamp type: {type(val)}")
 
+        def _to_optional_dt(val: object) -> datetime | None:
+            if val is None:
+                return None
+            return _to_dt(val)
+
         return cls(
             session_id=str(data["session_id"]),
             student_id=str(data["student_id"]),
@@ -151,6 +195,8 @@ class Session(_StrictBase):
             status=str(data.get("status", "active")),  # type: ignore[arg-type]
             created_at=_to_dt(data["created_at"]),
             updated_at=_to_dt(data["updated_at"]),
+            turn_count=int(data.get("turn_count", len(turns_raw))),
+            last_turn_at=_to_optional_dt(data.get("last_turn_at")),
             turns=[ConversationTurn.from_firestore_dict(t) for t in turns_raw],
             latest_snapshot=(
                 CanvasSnapshot.from_firestore_dict(snapshot_raw)
@@ -167,6 +213,7 @@ class AppendTurnRequest(_StrictBase):
 
     role: Literal["student", "sona"]
     content: str = Field(min_length=1, max_length=8_000)
+    metadata: dict[str, object] | None = None
 
 
 class SnapshotUploadResponse(_StrictBase):
