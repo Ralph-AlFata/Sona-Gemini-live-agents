@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +23,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     async def _create_session(payload: SessionCreate) -> Session:
         session = Session(
+            session_id=payload.session_id or uuid4().hex,
             student_id=payload.student_id,
             topic=payload.topic,
         )
@@ -34,6 +36,8 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     async def _append_turn(session_id: str, turn: Any) -> Session:
         session = sessions[session_id]
         session.turns.append(turn)
+        session.turn_count = len(session.turns)
+        session.last_turn_at = turn.timestamp
         session.updated_at = datetime.now(tz=timezone.utc)
         return session
 
@@ -83,7 +87,23 @@ def test_create_session(client: TestClient) -> None:
     assert body["student_id"] == "student_local_01"
     assert body["topic"] == "Pythagorean theorem"
     assert body["status"] == "active"
+    assert body["turn_count"] == 0
+    assert body["last_turn_at"] is None
     assert isinstance(body["session_id"], str) and len(body["session_id"]) > 0
+
+
+def test_create_session_with_caller_session_id(client: TestClient) -> None:
+    response = client.post(
+        "/sessions",
+        json={
+            "session_id": "dev-session",
+            "student_id": "student_local_02",
+            "topic": "linear equations",
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["session_id"] == "dev-session"
 
 
 def test_get_session_not_found(client: TestClient) -> None:
@@ -102,8 +122,45 @@ def test_append_turn_success(client: TestClient) -> None:
     assert response.status_code == 200
     body = response.json()
     assert len(body["turns"]) == 1
+    assert body["turn_count"] == 1
+    assert body["last_turn_at"] is not None
     assert body["turns"][0]["role"] == "student"
     assert body["turns"][0]["content"] == "Teach me right triangles"
+
+
+def test_append_turn_with_metadata(client: TestClient) -> None:
+    created = client.post("/sessions", json={"student_id": "s1", "topic": "triangles"})
+    session_id = created.json()["session_id"]
+
+    response = client.post(
+        f"/sessions/{session_id}/turns",
+        json={
+            "role": "sona",
+            "content": "Let's draw this step by step.",
+            "metadata": {
+                "draw_command_requests": [
+                    {
+                        "command_id": "cmd_1",
+                        "operation": "draw_shape",
+                        "session_id": session_id,
+                        "payload": {"shape": "line"},
+                    }
+                ],
+                "dsl_messages": [
+                    {
+                        "id": "abcd1234",
+                        "type": "element_created",
+                        "payload": {"element_id": "el_1"},
+                    }
+                ],
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["turns"][0]["role"] == "sona"
+    assert body["turns"][0]["metadata"]["draw_command_requests"][0]["operation"] == "draw_shape"
+    assert body["turns"][0]["metadata"]["dsl_messages"][0]["type"] == "element_created"
 
 
 def test_append_turn_not_found(client: TestClient) -> None:

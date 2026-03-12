@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -17,6 +18,7 @@ class DrawingCommandResult:
     created_element_ids: list[str]
     failed_operations: list[dict]
     emitted_count: int
+    dsl_messages: list[dict[str, Any]] = field(default_factory=list)
 
 class DrawingClient:
     def __init__(self, base_url: str) -> None:
@@ -46,4 +48,9 @@ class DrawingClient:
             created_element_ids=[str(item) for item in body.get("created_element_ids", [])],
             failed_operations=list(body.get("failed_operations", [])),
             emitted_count=int(body.get("emitted_count", 0)),
+            dsl_messages=[
+                item
+                for item in body.get("dsl_messages", [])
+                if isinstance(item, dict)
+            ],
         )

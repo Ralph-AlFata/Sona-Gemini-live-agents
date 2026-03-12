@@ -141,7 +141,11 @@ async def get_session(session_id: str) -> Session:
 async def append_turn(session_id: str, payload: AppendTurnRequest) -> Session:
     """Append a ConversationTurn to the session's turns array. Returns the updated session."""
     await _get_session_or_404(session_id)
-    turn = ConversationTurn(role=payload.role, content=payload.content)
+    turn = ConversationTurn(
+        role=payload.role,
+        content=payload.content,
+        metadata=payload.metadata,
+    )
     try:
         updated = await fs.append_turn(session_id, turn)
     except Exception as exc:

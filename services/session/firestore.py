@@ -2,7 +2,8 @@
 Firestore async client and session CRUD operations.
 
 Collection layout:
-    sessions/{session_id}   →  Session document (flat doc, no sub-collections)
+    sessions/{session_id}                → Session summary document
+    sessions/{session_id}/turns/{turn_id} → ConversationTurn documents
 
 The module holds a single AsyncClient instance initialised during app lifespan.
 Access it via get_firestore_client().
@@ -13,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from google.cloud import firestore  # type: ignore[import-untyped]
 from google.cloud.firestore_v1.async_client import AsyncClient  # type: ignore[import-untyped]
@@ -25,6 +27,7 @@ logger = logging.getLogger(__name__)
 _firestore_client: AsyncClient | None = None
 
 COLLECTION_NAME = "sessions"
+TURN_SUBCOLLECTION = "turns"
 
 
 # ─── Client lifecycle ─────────────────────────────────────────────────────────
@@ -69,47 +72,133 @@ async def close_firestore_client() -> None:
         logger.info("Firestore AsyncClient closed")
 
 
+# ─── Internal helpers ─────────────────────────────────────────────────────────
+
+def _session_doc_ref(client: AsyncClient, session_id: str):
+    return client.collection(COLLECTION_NAME).document(session_id)
+
+
+def _turns_col_ref(client: AsyncClient, session_id: str):
+    return _session_doc_ref(client, session_id).collection(TURN_SUBCOLLECTION)
+
+
+async def _load_turn_documents(session_id: str) -> list[dict[str, object]]:
+    """Load all turn documents for a session, sorted by timestamp."""
+    client = get_firestore_client()
+    turns_raw: list[dict[str, object]] = []
+    async for doc in _turns_col_ref(client, session_id).stream():
+        raw = doc.to_dict()
+        if isinstance(raw, dict):
+            turns_raw.append(raw)
+    turns_raw.sort(key=lambda item: str(item.get("timestamp", "")))
+    return turns_raw
+
+
+def _build_session_from_summary(
+    *,
+    session_id: str,
+    summary_raw: dict[str, object],
+    turns_raw: list[dict[str, object]],
+) -> Session:
+    """Construct API Session model from summary doc + turns subcollection."""
+    raw_for_model = dict(summary_raw)
+    raw_for_model["session_id"] = session_id
+    raw_for_model["turns"] = turns_raw
+    raw_turn_count = summary_raw.get("turn_count")
+    if isinstance(raw_turn_count, int):
+        raw_for_model["turn_count"] = max(raw_turn_count, len(turns_raw))
+    else:
+        raw_for_model["turn_count"] = len(turns_raw)
+    if "last_turn_at" not in raw_for_model and turns_raw:
+        raw_for_model["last_turn_at"] = turns_raw[-1].get("timestamp")
+    return Session.from_firestore_dict(raw_for_model)
+
+
+async def _delete_turn_documents(session_id: str) -> int:
+    """Delete all turn subcollection docs in batches of 500."""
+    client = get_firestore_client()
+    col_ref = _turns_col_ref(client, session_id)
+    batch = client.batch()
+    deleted_count = 0
+    async for doc in col_ref.stream():
+        batch.delete(doc.reference)
+        deleted_count += 1
+        if deleted_count % 500 == 0:
+            await batch.commit()
+            batch = client.batch()
+    if deleted_count % 500 != 0:
+        await batch.commit()
+    return deleted_count
+
+
 # ─── CRUD operations ──────────────────────────────────────────────────────────
 
 async def create_session(payload: SessionCreate) -> Session:
-    """Create a new Session document in Firestore."""
+    """Create a new session summary document in Firestore."""
     client = get_firestore_client()
+    session_id = payload.session_id or uuid4().hex
+    doc_ref = _session_doc_ref(client, session_id)
+    existing = await doc_ref.get()
+    if existing.exists:
+        logger.info("Session already exists: %s", session_id)
+        existing_session = await get_session(session_id)
+        if existing_session is None:
+            raise ValueError(f"Session {session_id!r} exists but could not be loaded")
+        return existing_session
+
     session = Session(
+        session_id=session_id,
         student_id=payload.student_id,
         topic=payload.topic,
+        turn_count=0,
+        last_turn_at=None,
     )
-    doc_ref = client.collection(COLLECTION_NAME).document(session.session_id)
-    await doc_ref.set(session.to_firestore_dict())
+    await doc_ref.set(session.to_firestore_summary_dict())
     logger.info("Session created: %s", session.session_id)
     return session
 
 
 async def get_session(session_id: str) -> Session | None:
-    """Fetch a Session document by ID. Returns None if not found."""
+    """Fetch a session summary + turns by ID. Returns None if not found."""
     client = get_firestore_client()
-    doc_ref = client.collection(COLLECTION_NAME).document(session_id)
+    doc_ref = _session_doc_ref(client, session_id)
     snapshot = await doc_ref.get()
     if not snapshot.exists:
         logger.debug("Session not found: %s", session_id)
         return None
-    raw: dict[str, object] = snapshot.to_dict() or {}
-    return Session.from_firestore_dict(raw)
+    summary_raw: dict[str, object] = snapshot.to_dict() or {}
+    turns_raw = await _load_turn_documents(session_id)
+
+    return _build_session_from_summary(
+        session_id=session_id,
+        summary_raw=summary_raw,
+        turns_raw=turns_raw,
+    )
 
 
 async def append_turn(session_id: str, turn: ConversationTurn) -> Session:
     """
-    Atomically append a ConversationTurn to the session's turns array.
-    Also bumps updated_at. Returns the updated Session.
+    Persist a ConversationTurn in turns subcollection.
+    Also bumps summary updated_at / turn_count / last_turn_at.
     """
     client = get_firestore_client()
-    doc_ref = client.collection(COLLECTION_NAME).document(session_id)
+    session_ref = _session_doc_ref(client, session_id)
+    turn_ref = _turns_col_ref(client, session_id).document(turn.turn_id)
+    now_iso = datetime.now(tz=timezone.utc).isoformat()
+    turn_ts_iso = turn.timestamp.isoformat()
 
-    await doc_ref.update(
+    batch = client.batch()
+    batch.set(turn_ref, turn.to_firestore_dict())
+    batch.update(
+        session_ref,
         {
-            "turns": firestore.ArrayUnion([turn.to_firestore_dict()]),
-            "updated_at": datetime.now(tz=timezone.utc).isoformat(),
-        }
+            "updated_at": now_iso,
+            "turn_count": firestore.Increment(1),
+            "last_turn_at": turn_ts_iso,
+        },
     )
+    await batch.commit()
+
     logger.debug("Turn appended to session %s (role=%s)", session_id, turn.role)
 
     updated = await get_session(session_id)
@@ -121,7 +210,7 @@ async def append_turn(session_id: str, turn: ConversationTurn) -> Session:
 async def update_snapshot_url(session_id: str, snapshot: CanvasSnapshot) -> Session:
     """Update the latest_snapshot field on a session document. Returns the updated Session."""
     client = get_firestore_client()
-    doc_ref = client.collection(COLLECTION_NAME).document(session_id)
+    doc_ref = _session_doc_ref(client, session_id)
 
     await doc_ref.update(
         {
@@ -140,10 +229,11 @@ async def update_snapshot_url(session_id: str, snapshot: CanvasSnapshot) -> Sess
 async def delete_session(session_id: str) -> bool:
     """Delete a session document. Returns True if deleted, False if not found."""
     client = get_firestore_client()
-    doc_ref = client.collection(COLLECTION_NAME).document(session_id)
+    doc_ref = _session_doc_ref(client, session_id)
     snapshot_check = await doc_ref.get()
     if not snapshot_check.exists:
         return False
+    deleted_turns = await _delete_turn_documents(session_id)
     await doc_ref.delete()
-    logger.info("Session deleted: %s", session_id)
+    logger.info("Session deleted: %s (turn_docs=%d)", session_id, deleted_turns)
     return True

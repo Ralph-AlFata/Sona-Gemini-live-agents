@@ -317,6 +317,7 @@ class DrawResponse(_StrictBase):
     created_element_ids: list[str] = Field(default_factory=list)
     failed_operations: list[DrawCommandFailure] = Field(default_factory=list)
     emitted_count: int = Field(ge=0)
+    dsl_messages: list[DSLMessage] = Field(default_factory=list)
 
 class ClearRequest(_StrictBase):
     session_id: str = Field(min_length=1, max_length=128)
