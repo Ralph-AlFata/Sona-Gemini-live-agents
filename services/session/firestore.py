@@ -4,6 +4,7 @@ Firestore async client and session CRUD operations.
 Collection layout:
     sessions/{session_id}                → Session summary document
     sessions/{session_id}/turns/{turn_id} → ConversationTurn documents
+    sessions/{session_id}/elements/{element_id} → Materialized per-element docs
 
 The module holds a single AsyncClient instance initialised during app lifespan.
 Access it via get_firestore_client().
@@ -28,6 +29,7 @@ _firestore_client: AsyncClient | None = None
 
 COLLECTION_NAME = "sessions"
 TURN_SUBCOLLECTION = "turns"
+ELEMENTS_SUBCOLLECTION = "elements"
 
 
 # ─── Client lifecycle ─────────────────────────────────────────────────────────
@@ -82,6 +84,10 @@ def _turns_col_ref(client: AsyncClient, session_id: str):
     return _session_doc_ref(client, session_id).collection(TURN_SUBCOLLECTION)
 
 
+def _elements_col_ref(client: AsyncClient, session_id: str):
+    return _session_doc_ref(client, session_id).collection(ELEMENTS_SUBCOLLECTION)
+
+
 async def _load_turn_documents(session_id: str) -> list[dict[str, object]]:
     """Load all turn documents for a session, sorted by timestamp."""
     client = get_firestore_client()
@@ -92,6 +98,343 @@ async def _load_turn_documents(session_id: str) -> list[dict[str, object]]:
             turns_raw.append(raw)
     turns_raw.sort(key=lambda item: str(item.get("timestamp", "")))
     return turns_raw
+
+
+def _extract_dsl_messages_from_metadata(
+    metadata: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    """Collect DSL messages from known metadata containers."""
+    if not isinstance(metadata, dict):
+        return []
+
+    dsl_messages: list[dict[str, object]] = []
+    top_level = metadata.get("dsl_messages")
+    if isinstance(top_level, list):
+        dsl_messages.extend(item for item in top_level if isinstance(item, dict))
+
+    draw_results = metadata.get("draw_command_results")
+    if isinstance(draw_results, list):
+        for result in draw_results:
+            if not isinstance(result, dict):
+                continue
+            nested = result.get("dsl_messages")
+            if isinstance(nested, list):
+                dsl_messages.extend(item for item in nested if isinstance(item, dict))
+
+    return dsl_messages
+
+
+def _coerce_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _compute_bbox_from_payload(payload: dict[str, object]) -> dict[str, float] | None:
+    """Derive a normalized bbox from common DSL payload shapes."""
+    points_raw = payload.get("points")
+    if isinstance(points_raw, list):
+        xs: list[float] = []
+        ys: list[float] = []
+        for point in points_raw:
+            if not isinstance(point, dict):
+                continue
+            x = _coerce_float(point.get("x"))
+            y = _coerce_float(point.get("y"))
+            if x is None or y is None:
+                continue
+            xs.append(x)
+            ys.append(y)
+        if xs and ys:
+            min_x = min(xs)
+            max_x = max(xs)
+            min_y = min(ys)
+            max_y = max(ys)
+            return {
+                "x": min_x,
+                "y": min_y,
+                "width": max(max_x - min_x, 0.0),
+                "height": max(max_y - min_y, 0.0),
+            }
+
+    x = _coerce_float(payload.get("x"))
+    y = _coerce_float(payload.get("y"))
+    if x is None or y is None:
+        return None
+
+    width = _coerce_float(payload.get("width"))
+    height = _coerce_float(payload.get("height"))
+    return {
+        "x": x,
+        "y": y,
+        "width": max(width if width is not None else 0.0, 0.0),
+        "height": max(height if height is not None else 0.0, 0.0),
+    }
+
+
+def _apply_style_update_to_payload(
+    payload: dict[str, object],
+    style_update: dict[str, object],
+) -> dict[str, object]:
+    """
+    Apply style updates across both known payload style layouts:
+    - flattened frontend fields (`color`, `stroke_width`, ...)
+    - nested internal `style` object (`stroke_color`, `stroke_width`, ...)
+    """
+    updated_payload = dict(payload)
+
+    for key, value in style_update.items():
+        updated_payload[key] = value
+
+    nested_style_raw = updated_payload.get("style")
+    nested_style = dict(nested_style_raw) if isinstance(nested_style_raw, dict) else {}
+    key_map = {
+        "color": "stroke_color",
+        "stroke_width": "stroke_width",
+        "fill_color": "fill_color",
+        "opacity": "opacity",
+        "z_index": "z_index",
+        "delay_ms": "delay_ms",
+        "animate": "animate",
+    }
+    for key, value in style_update.items():
+        nested_style[key_map.get(key, key)] = value
+    if nested_style:
+        updated_payload["style"] = nested_style
+
+    return updated_payload
+
+
+def _build_element_entry(
+    *,
+    element_id: str,
+    element_type: str | None,
+    payload: dict[str, object],
+    message: dict[str, object],
+) -> dict[str, object]:
+    """Construct stored element snapshot for the materialized session index."""
+    entry: dict[str, object] = {
+        "element_id": element_id,
+        "element_type": element_type or "unknown",
+        "payload": payload,
+    }
+    bbox = _compute_bbox_from_payload(payload)
+    if bbox is not None:
+        entry["bbox"] = bbox
+    message_id = message.get("id")
+    if isinstance(message_id, str):
+        entry["last_message_id"] = message_id
+    message_type = message.get("type")
+    if isinstance(message_type, str):
+        entry["last_message_type"] = message_type
+    timestamp = message.get("timestamp")
+    entry["updated_at"] = (
+        timestamp
+        if isinstance(timestamp, str)
+        else datetime.now(tz=timezone.utc).isoformat()
+    )
+    return entry
+
+
+def _apply_dsl_messages_to_elements(
+    *,
+    elements_by_id: dict[str, dict[str, object]],
+    dsl_messages: list[dict[str, object]],
+) -> bool:
+    """
+    Reconcile session element index from ordered DSL messages.
+
+    Returns True when in-memory state changed.
+    """
+    changed = False
+
+    for message in dsl_messages:
+        message_type = message.get("type")
+        payload_raw = message.get("payload")
+        if not isinstance(message_type, str) or not isinstance(payload_raw, dict):
+            continue
+
+        if message_type == "element_created":
+            element_id = payload_raw.get("element_id")
+            if not isinstance(element_id, str) or not element_id:
+                continue
+            element_type = payload_raw.get("element_type")
+            element_payload_raw = payload_raw.get("payload")
+            element_payload = (
+                dict(element_payload_raw) if isinstance(element_payload_raw, dict) else {}
+            )
+            next_entry = _build_element_entry(
+                element_id=element_id,
+                element_type=element_type if isinstance(element_type, str) else None,
+                payload=element_payload,
+                message=message,
+            )
+            if elements_by_id.get(element_id) != next_entry:
+                elements_by_id[element_id] = next_entry
+                changed = True
+            continue
+
+        if message_type == "elements_transformed":
+            transformed_raw = payload_raw.get("elements")
+            if not isinstance(transformed_raw, list):
+                continue
+            for transformed in transformed_raw:
+                if not isinstance(transformed, dict):
+                    continue
+                element_id = transformed.get("element_id")
+                if not isinstance(element_id, str) or not element_id:
+                    continue
+                payload_value = transformed.get("payload")
+                element_payload = dict(payload_value) if isinstance(payload_value, dict) else {}
+                element_type_raw = transformed.get("element_type")
+                element_type = element_type_raw if isinstance(element_type_raw, str) else None
+                if element_type is None:
+                    existing = elements_by_id.get(element_id)
+                    existing_type = existing.get("element_type") if isinstance(existing, dict) else None
+                    if isinstance(existing_type, str):
+                        element_type = existing_type
+                next_entry = _build_element_entry(
+                    element_id=element_id,
+                    element_type=element_type,
+                    payload=element_payload,
+                    message=message,
+                )
+                if elements_by_id.get(element_id) != next_entry:
+                    elements_by_id[element_id] = next_entry
+                    changed = True
+            continue
+
+        if message_type == "elements_restyled":
+            restyled_raw = payload_raw.get("elements")
+            if not isinstance(restyled_raw, list):
+                continue
+            for restyled in restyled_raw:
+                if not isinstance(restyled, dict):
+                    continue
+                element_id = restyled.get("element_id")
+                style_raw = restyled.get("style")
+                existing = elements_by_id.get(element_id) if isinstance(element_id, str) else None
+                if (
+                    not isinstance(element_id, str)
+                    or not element_id
+                    or not isinstance(style_raw, dict)
+                    or not isinstance(existing, dict)
+                ):
+                    continue
+                existing_payload_raw = existing.get("payload")
+                existing_payload = (
+                    dict(existing_payload_raw) if isinstance(existing_payload_raw, dict) else {}
+                )
+                merged_payload = _apply_style_update_to_payload(existing_payload, style_raw)
+                element_type_raw = restyled.get("element_type")
+                element_type = (
+                    element_type_raw if isinstance(element_type_raw, str) else existing.get("element_type")
+                )
+                next_entry = _build_element_entry(
+                    element_id=element_id,
+                    element_type=element_type if isinstance(element_type, str) else None,
+                    payload=merged_payload,
+                    message=message,
+                )
+                if elements_by_id.get(element_id) != next_entry:
+                    elements_by_id[element_id] = next_entry
+                    changed = True
+            continue
+
+        if message_type == "elements_deleted":
+            deleted_ids = payload_raw.get("element_ids")
+            if not isinstance(deleted_ids, list):
+                continue
+            for raw_element_id in deleted_ids:
+                if isinstance(raw_element_id, str) and raw_element_id in elements_by_id:
+                    elements_by_id.pop(raw_element_id, None)
+                    changed = True
+            continue
+
+        if message_type == "clear":
+            if elements_by_id:
+                elements_by_id.clear()
+                changed = True
+
+    return changed
+
+
+async def _load_elements_index(session_id: str) -> dict[str, dict[str, object]]:
+    """Load element documents for a session keyed by element_id."""
+    client = get_firestore_client()
+    parsed: dict[str, dict[str, object]] = {}
+    async for doc in _elements_col_ref(client, session_id).stream():
+        raw = doc.to_dict()
+        if not isinstance(raw, dict):
+            continue
+        element_id_raw = raw.get("element_id")
+        if isinstance(element_id_raw, str) and element_id_raw:
+            parsed[element_id_raw] = dict(raw)
+            continue
+        parsed[doc.id] = dict(raw)
+    return parsed
+
+
+async def _write_elements_index(
+    *,
+    session_id: str,
+    elements_by_id: dict[str, dict[str, object]],
+    previous_element_ids: set[str],
+) -> None:
+    """Persist element documents and delete any removed IDs."""
+    client = get_firestore_client()
+    col_ref = _elements_col_ref(client, session_id)
+    next_element_ids = set(elements_by_id.keys())
+    removed_element_ids = previous_element_ids - next_element_ids
+
+    batch = client.batch()
+    operation_count = 0
+
+    for element_id, entry in elements_by_id.items():
+        entry_to_write = dict(entry)
+        entry_to_write["element_id"] = element_id
+        entry_to_write["session_id"] = session_id
+        batch.set(col_ref.document(element_id), entry_to_write)
+        operation_count += 1
+        if operation_count >= 500:
+            await batch.commit()
+            batch = client.batch()
+            operation_count = 0
+
+    for element_id in removed_element_ids:
+        batch.delete(col_ref.document(element_id))
+        operation_count += 1
+        if operation_count >= 500:
+            await batch.commit()
+            batch = client.batch()
+            operation_count = 0
+
+    if operation_count > 0:
+        await batch.commit()
+
+
+async def _reconcile_elements_from_turn(
+    *,
+    session_id: str,
+    turn: ConversationTurn,
+) -> None:
+    """Update session element collection from DSL messages carried by a turn."""
+    dsl_messages = _extract_dsl_messages_from_metadata(turn.metadata)
+    if not dsl_messages:
+        return
+    elements_by_id = await _load_elements_index(session_id)
+    previous_element_ids = set(elements_by_id.keys())
+    changed = _apply_dsl_messages_to_elements(
+        elements_by_id=elements_by_id,
+        dsl_messages=dsl_messages,
+    )
+    if not changed:
+        return
+    await _write_elements_index(
+        session_id=session_id,
+        elements_by_id=elements_by_id,
+        previous_element_ids=previous_element_ids,
+    )
 
 
 def _build_session_from_summary(
@@ -116,8 +459,20 @@ def _build_session_from_summary(
 
 async def _delete_turn_documents(session_id: str) -> int:
     """Delete all turn subcollection docs in batches of 500."""
+    return await _delete_subcollection_documents(
+        session_id=session_id,
+        subcollection_name=TURN_SUBCOLLECTION,
+    )
+
+
+async def _delete_subcollection_documents(
+    *,
+    session_id: str,
+    subcollection_name: str,
+) -> int:
+    """Delete all docs in a session subcollection in batches of 500."""
     client = get_firestore_client()
-    col_ref = _turns_col_ref(client, session_id)
+    col_ref = _session_doc_ref(client, session_id).collection(subcollection_name)
     batch = client.batch()
     deleted_count = 0
     async for doc in col_ref.stream():
@@ -199,6 +554,15 @@ async def append_turn(session_id: str, turn: ConversationTurn) -> Session:
     )
     await batch.commit()
 
+    try:
+        await _reconcile_elements_from_turn(session_id=session_id, turn=turn)
+    except Exception:
+        logger.exception(
+            "Element index reconciliation failed for session %s turn %s",
+            session_id,
+            turn.turn_id,
+        )
+
     logger.debug("Turn appended to session %s (role=%s)", session_id, turn.role)
 
     updated = await get_session(session_id)
@@ -234,6 +598,15 @@ async def delete_session(session_id: str) -> bool:
     if not snapshot_check.exists:
         return False
     deleted_turns = await _delete_turn_documents(session_id)
+    deleted_element_docs = await _delete_subcollection_documents(
+        session_id=session_id,
+        subcollection_name=ELEMENTS_SUBCOLLECTION,
+    )
     await doc_ref.delete()
-    logger.info("Session deleted: %s (turn_docs=%d)", session_id, deleted_turns)
+    logger.info(
+        "Session deleted: %s (turn_docs=%d, element_docs=%d)",
+        session_id,
+        deleted_turns,
+        deleted_element_docs,
+    )
     return True
