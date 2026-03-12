@@ -18,16 +18,6 @@ class DrawingCommandResult:
     failed_operations: list[dict]
     emitted_count: int
 
-
-@dataclass(slots=True)
-class BatchResult:
-    session_id: str
-    total_applied: int
-    total_created_element_ids: list[str]
-    total_failed: int
-    total_emitted: int
-
-
 class DrawingClient:
     def __init__(self, base_url: str) -> None:
         self._client = httpx.AsyncClient(base_url=base_url, timeout=10.0)
@@ -56,28 +46,4 @@ class DrawingClient:
             created_element_ids=[str(item) for item in body.get("created_element_ids", [])],
             failed_operations=list(body.get("failed_operations", [])),
             emitted_count=int(body.get("emitted_count", 0)),
-        )
-
-    async def execute_batch(self, commands: list[dict]) -> BatchResult:
-        """Send a batch of draw commands in a single HTTP call."""
-        if not commands:
-            return BatchResult(
-                session_id="",
-                total_applied=0,
-                total_created_element_ids=[],
-                total_failed=0,
-                total_emitted=0,
-            )
-        response = await self._client.post(
-            "/draw/batch",
-            json={"commands": commands},
-        )
-        response.raise_for_status()
-        body = response.json()
-        return BatchResult(
-            session_id=str(body["session_id"]),
-            total_applied=int(body.get("total_applied", 0)),
-            total_created_element_ids=[str(x) for x in body.get("total_created_element_ids", [])],
-            total_failed=int(body.get("total_failed", 0)),
-            total_emitted=int(body.get("total_emitted", 0)),
         )

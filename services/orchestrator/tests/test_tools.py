@@ -3,20 +3,55 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent.tools import _batch, _shared, core, editing, math_helpers
+from agent.tools import _shared, core, editing, math_helpers
 from agent.tools.models import DrawShapeInput, HighlightInput
+from drawing_client import DrawingCommandResult
+
+
+class _FakeClient:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self._counter = 0
+
+    async def execute(
+        self,
+        session_id: str,
+        operation: str,
+        payload: dict,
+        command_id: str | None = None,
+    ) -> DrawingCommandResult:
+        self._counter += 1
+        created_ids = []
+        if operation in {"draw_shape", "draw_text", "draw_freehand"}:
+            created_ids = [f"el_test_{self._counter}"]
+        self.calls.append(
+            {
+                "session_id": session_id,
+                "operation": operation,
+                "payload": payload,
+                "command_id": command_id,
+            }
+        )
+        return DrawingCommandResult(
+            session_id=session_id,
+            command_id=command_id or f"cmd_test_{self._counter}",
+            operation=operation,
+            applied_count=1,
+            created_element_ids=created_ids,
+            failed_operations=[],
+            emitted_count=1,
+        )
 
 
 @pytest.fixture(autouse=True)
-def _clean_batches() -> None:
-    """Ensure no stale batch leaks between tests."""
-    yield
-    # Synchronous cleanup — the batch registry is just a dict.
-    _batch._active_batches.pop("s_test", None)
+def _fake_client(monkeypatch: pytest.MonkeyPatch) -> _FakeClient:
+    client = _FakeClient()
+    monkeypatch.setattr(_shared, "get_client", lambda: client)
+    return client
 
 
 @pytest.mark.asyncio
-async def test_draw_shape_maps_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_draw_shape_maps_payload(monkeypatch: pytest.MonkeyPatch, _fake_client: _FakeClient) -> None:
     monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_test")
 
     result = await core.draw_shape(
@@ -36,16 +71,10 @@ async def test_draw_shape_maps_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(result["created_element_ids"]) == 1
     assert result["created_element_ids"][0].startswith("el_")
 
-    # Verify the command was queued in the batch
-    batch = await _batch.pop_batch("s_test")
-    assert batch is not None
-    commands = await batch.drain()
-    assert len(commands) == 1
-    assert commands[0]["operation"] == "draw_shape"
-    assert commands[0]["payload"]["style"]["stroke_color"] == "#ff0000"
-    assert len(commands[0]["payload"]["points"]) == 5
-    # Pre-generated element_id should be in the command
-    assert commands[0]["element_id"] == result["created_element_ids"][0]
+    assert len(_fake_client.calls) == 1
+    assert _fake_client.calls[0]["operation"] == "draw_shape"
+    assert _fake_client.calls[0]["payload"]["style"]["stroke_color"] == "#ff0000"
+    assert len(_fake_client.calls[0]["payload"]["points"]) == 5
 
 
 @pytest.mark.asyncio
@@ -67,7 +96,7 @@ async def test_plot_function_no_points_returns_error(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_draw_axes_grid_uses_viewport_command(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_draw_axes_grid_uses_viewport_command(monkeypatch: pytest.MonkeyPatch, _fake_client: _FakeClient) -> None:
     monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
 
     result = await math_helpers.draw_axes_grid(
@@ -84,18 +113,15 @@ async def test_draw_axes_grid_uses_viewport_command(monkeypatch: pytest.MonkeyPa
 
     assert result["status"] == "success"
 
-    batch = await _batch.pop_batch("s_test")
-    assert batch is not None
-    commands = await batch.drain()
-    assert len(commands) == 1
-    assert commands[0]["operation"] == "set_graph_viewport"
-    assert commands[0]["payload"]["grid_lines"] == 12
-    assert commands[0]["payload"]["domain_min"] == -5
-    assert commands[0]["payload"]["y_max"] == 8
+    assert len(_fake_client.calls) == 1
+    assert _fake_client.calls[0]["operation"] == "set_graph_viewport"
+    assert _fake_client.calls[0]["payload"]["grid_lines"] == 12
+    assert _fake_client.calls[0]["payload"]["domain_min"] == -5
+    assert _fake_client.calls[0]["payload"]["y_max"] == 8
 
 
 @pytest.mark.asyncio
-async def test_update_element_points_maps_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_update_element_points_maps_payload(monkeypatch: pytest.MonkeyPatch, _fake_client: _FakeClient) -> None:
     monkeypatch.setattr(editing, "resolve_session_id", lambda _ctx: "s_test")
 
     result = await editing.update_element_points(
@@ -106,21 +132,18 @@ async def test_update_element_points_maps_payload(monkeypatch: pytest.MonkeyPatc
 
     assert result["status"] == "success"
 
-    batch = await _batch.pop_batch("s_test")
-    assert batch is not None
-    commands = await batch.drain()
-    assert len(commands) == 1
-    assert commands[0]["operation"] == "update_points"
-    assert commands[0]["payload"]["element_id"] == "el_123"
-    assert commands[0]["payload"]["mode"] == "append"
-    # Non-creation ops should not have element_id
-    assert "element_id" not in commands[0]
+    assert len(_fake_client.calls) == 1
+    assert _fake_client.calls[0]["operation"] == "update_points"
+    assert _fake_client.calls[0]["payload"]["element_id"] == "el_123"
+    assert _fake_client.calls[0]["payload"]["mode"] == "append"
 
 
 @pytest.mark.asyncio
-async def test_number_line_batches_all_subcommands(monkeypatch: pytest.MonkeyPatch) -> None:
-    """draw_number_line makes multiple execute_tool_command calls internally.
-    All should be queued in a single batch."""
+async def test_number_line_executes_all_subcommands(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    """draw_number_line makes multiple execute_tool_command calls internally."""
     monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
 
     result = await math_helpers.draw_number_line(
@@ -133,16 +156,10 @@ async def test_number_line_batches_all_subcommands(monkeypatch: pytest.MonkeyPat
 
     assert result["status"] == "success"
 
-    batch = await _batch.pop_batch("s_test")
-    assert batch is not None
-    commands = await batch.drain()
     # 1 base line + 5 ticks + 5 labels = 11 commands
-    assert len(commands) == 11
-    # All creation ops should have pre-generated element IDs
-    for cmd in commands:
-        assert cmd["operation"] in ("draw_shape", "draw_text")
-        assert "element_id" in cmd
-        assert cmd["element_id"].startswith("el_")
+    assert len(_fake_client.calls) == 11
+    for call in _fake_client.calls:
+        assert call["operation"] in ("draw_shape", "draw_text")
 
 
 def test_draw_shape_rejects_unsupported_shape() -> None:
