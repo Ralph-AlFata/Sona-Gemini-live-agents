@@ -23,8 +23,6 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from agent import root_agent
-from agent.tools._batch import pop_batch
-from agent.tools._shared import get_client
 from config import settings
 
 load_dotenv()
@@ -38,6 +36,8 @@ warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 UPSTREAM_AUDIO_LOG_EVERY_N_CHUNKS = 25
 STOP_TURN_DRAIN_TIMEOUT_SECONDS = 0.75
 DOWNSTREAM_AUDIO_EVENT_LOG_EVERY_N_EVENTS = 50
+UPSTREAM_MAX_BUFFERED_AUDIO_BYTES = 10 * 1024 * 1024
+ALLOW_BARGE_IN_INTERRUPT = False
 
 
 def _sanitize_event_for_log(value: Any) -> Any:
@@ -97,14 +97,6 @@ def _is_audio_only_event(event_payload: dict[str, Any]) -> bool:
     return True
 
 
-def _has_nonempty_output_transcription(event_payload: dict[str, Any]) -> bool:
-    output_transcription = event_payload.get("outputTranscription")
-    if not isinstance(output_transcription, dict):
-        return False
-    text = output_transcription.get("text")
-    return isinstance(text, str) and bool(text.strip())
-
-
 def _has_audio_output(event_payload: dict[str, Any]) -> bool:
     content = event_payload.get("content")
     if not isinstance(content, dict):
@@ -123,6 +115,7 @@ def _has_audio_output(event_payload: dict[str, Any]) -> bool:
         if isinstance(mime_type, str) and mime_type.startswith("audio/pcm") and data:
             return True
     return False
+
 
 @dataclass(slots=True)
 class LiveRuntime:
@@ -349,7 +342,9 @@ async def websocket_endpoint(
             else:
                 task.cancel()
 
-    async def start_new_turn(trigger: str) -> LiveRequestQueue:
+    async def start_new_turn(
+        trigger: str,
+    ) -> LiveRequestQueue:
         nonlocal turn_counter, live_request_queue, live_task
         await stop_current_turn(reason=f"restart_for_{trigger}", wait_for_drain=False)
 
@@ -359,9 +354,6 @@ async def websocket_endpoint(
 
         async def downstream_for_turn(active_queue: LiveRequestQueue, active_turn_id: int) -> None:
             nonlocal event_index, live_request_queue, live_task
-            has_spoken_this_turn = False
-            saw_tool_call_since_turn_complete = False
-            saw_output_since_turn_complete = False
             try:
                 async for event in runtime.runner.run_live(
                     user_id=user_id,
@@ -380,24 +372,17 @@ async def websocket_endpoint(
                                 function_calls.append(name)
 
                     event_payload = event.model_dump(exclude_none=True, by_alias=True)
-                    if _has_audio_output(event_payload) or _has_nonempty_output_transcription(event_payload):
-                        has_spoken_this_turn = True
                     text_parts = _extract_text_parts(event_payload)
-                    if function_calls:
-                        saw_tool_call_since_turn_complete = True
-                    if _has_nonempty_output_transcription(event_payload) or text_parts:
-                        saw_output_since_turn_complete = True
                     is_audio_only = _is_audio_only_event(event_payload)
                     if not is_audio_only:
                         logger.info(
-                            "LIVE_EVENT session_id=%s turn_id=%s idx=%s t_plus_ms=%s function_calls=%s text_parts=%s turn_complete=%s interrupted=%s",
+                            "LIVE_EVENT session_id=%s turn_id=%s idx=%s t_plus_ms=%s function_calls=%s text_parts=%s interrupted=%s",
                             session_id,
                             active_turn_id,
                             event_index,
                             elapsed_ms,
                             function_calls,
                             text_parts,
-                            event_payload.get("turnComplete"),
                             event_payload.get("interrupted"),
                         )
                         logger.info(
@@ -411,6 +396,22 @@ async def websocket_endpoint(
                                 default=str,
                             )[:4000],
                         )
+                        usage = event_payload.get("usageMetadata")
+                        if isinstance(usage, dict):
+                            prompt_tokens = usage.get("promptTokenCount")
+                            total_tokens = usage.get("totalTokenCount")
+                            output_tokens = None
+                            if isinstance(prompt_tokens, int) and isinstance(total_tokens, int):
+                                output_tokens = total_tokens - prompt_tokens
+                            logger.info(
+                                "LIVE_USAGE session_id=%s turn_id=%s idx=%s prompt_tokens=%s total_tokens=%s output_tokens=%s",
+                                session_id,
+                                active_turn_id,
+                                event_index,
+                                prompt_tokens,
+                                total_tokens,
+                                output_tokens,
+                            )
                     elif event_index % DOWNSTREAM_AUDIO_EVENT_LOG_EVERY_N_EVENTS == 0:
                         logger.debug(
                             "LIVE_EVENT_AUDIO_SAMPLE session_id=%s turn_id=%s idx=%s t_plus_ms=%s",
@@ -423,39 +424,6 @@ async def websocket_endpoint(
                     event_json = event.model_dump_json(exclude_none=True, by_alias=True)
                     logger.debug(f"[SERVER] Event: {event_json}")
                     await websocket.send_text(event_json)
-
-                    if event_payload.get("turnComplete") is True:
-                        if not has_spoken_this_turn and not saw_tool_call_since_turn_complete:
-                            logger.info(
-                                "LIVE_TURN_COMPLETE_DEFER_CLOSE session_id=%s turn_id=%s reason=no_model_output_yet",
-                                session_id,
-                                active_turn_id,
-                            )
-                            continue
-
-                        if saw_tool_call_since_turn_complete:
-                            logger.info(
-                                "LIVE_TURN_COMPLETE_CONTINUE session_id=%s turn_id=%s reason=tool_progress",
-                                session_id,
-                                active_turn_id,
-                            )
-                            saw_tool_call_since_turn_complete = False
-                            saw_output_since_turn_complete = False
-                            continue
-
-                        if saw_output_since_turn_complete:
-                            await stop_current_turn(
-                                reason="turn_complete_no_tool_progress",
-                                wait_for_drain=False,
-                            )
-                            return
-
-                        # Defensive close: repeated completion packets with no new progress.
-                        await stop_current_turn(
-                            reason="turn_complete_no_progress",
-                            wait_for_drain=False,
-                        )
-                        return
             except Exception as exc:
                 logger.exception(
                     "LIVE_TURN_DOWNSTREAM_ERROR session_id=%s turn_id=%s: %s",
@@ -464,36 +432,6 @@ async def websocket_endpoint(
                     exc,
                 )
             finally:
-                # Flush any pending batched draw commands as a single HTTP call.
-                batch = await pop_batch(session_id)
-                if batch is not None:
-                    commands = await batch.drain()
-                    if commands:
-                        logger.info(
-                            "BATCH_FLUSH session_id=%s turn_id=%s commands=%d",
-                            session_id,
-                            active_turn_id,
-                            len(commands),
-                        )
-                        try:
-                            batch_result = await get_client().execute_batch(commands)
-                            logger.info(
-                                "BATCH_FLUSH_OK session_id=%s turn_id=%s applied=%d created=%d failed=%d emitted=%d",
-                                session_id,
-                                active_turn_id,
-                                batch_result.total_applied,
-                                len(batch_result.total_created_element_ids),
-                                batch_result.total_failed,
-                                batch_result.total_emitted,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "BATCH_FLUSH_ERROR session_id=%s turn_id=%s commands=%d",
-                                session_id,
-                                active_turn_id,
-                                len(commands),
-                            )
-
                 async with turn_state_lock:
                     if live_request_queue is active_queue:
                         live_request_queue = None
@@ -524,13 +462,27 @@ async def websocket_endpoint(
         Supports manual turn control via JSON control messages:
           {"type": "activity_start"}  — user started speaking
           {"type": "activity_end"}    — user stopped speaking
-        Audio bytes are only forwarded while an activity window is open.
+        Audio bytes are buffered while speaking and only sent upstream once
+        activity_end is received. This enforces push-to-talk half-duplex:
+        the assistant responds only after the user releases the button.
         """
         is_speaking = False
         audio_chunk_count = 0
+        buffered_audio_chunks: list[bytes] = []
+        buffered_audio_bytes = 0
 
         while True:
-            message = await websocket.receive()
+            try:
+                message = await websocket.receive()
+            except RuntimeError as exc:
+                if 'disconnect message has been received' in str(exc):
+                    logger.info(
+                        "LIVE_WS_RECEIVE_AFTER_DISCONNECT user_id=%s session_id=%s",
+                        user_id,
+                        session_id,
+                    )
+                    return
+                raise
 
             if "bytes" in message:
                 if not is_speaking:
@@ -544,13 +496,18 @@ async def websocket_endpoint(
                         len(audio_data),
                         audio_chunk_count,
                     )
-                audio_blob = types.Blob(
-                    mime_type="audio/pcm;rate=16000", data=audio_data
-                )
-                async with turn_state_lock:
-                    queue = live_request_queue
-                if queue is not None:
-                    queue.send_realtime(audio_blob)
+                if (
+                    buffered_audio_bytes + len(audio_data)
+                    <= UPSTREAM_MAX_BUFFERED_AUDIO_BYTES
+                ):
+                    buffered_audio_chunks.append(audio_data)
+                    buffered_audio_bytes += len(audio_data)
+                elif buffered_audio_bytes <= UPSTREAM_MAX_BUFFERED_AUDIO_BYTES:
+                    logger.warning(
+                        "LIVE_UPSTREAM_AUDIO_BUFFER_LIMIT session_id=%s max_bytes=%s",
+                        session_id,
+                        UPSTREAM_MAX_BUFFERED_AUDIO_BYTES,
+                    )
 
             elif "text" in message:
                 raw_text = message.get("text")
@@ -568,17 +525,48 @@ async def websocket_endpoint(
                 msg_type = json_message.get("type")
 
                 if msg_type == "activity_start":
+                    if ALLOW_BARGE_IN_INTERRUPT:
+                        await stop_current_turn(
+                            reason="barge_in_activity_start",
+                            wait_for_drain=False,
+                        )
                     is_speaking = True
-                    queue = await start_new_turn(trigger="activity_start")
-                    queue.send_activity_start()
+                    buffered_audio_chunks.clear()
+                    buffered_audio_bytes = 0
                     logger.info("LIVE_ACTIVITY_START session_id=%s", session_id)
 
                 elif msg_type == "activity_end":
+                    if not is_speaking:
+                        logger.info(
+                            "LIVE_ACTIVITY_END_IGNORED session_id=%s reason=not_speaking",
+                            session_id,
+                        )
+                        continue
                     is_speaking = False
-                    async with turn_state_lock:
-                        queue = live_request_queue
-                    if queue is not None:
-                        queue.send_activity_end()
+                    if not buffered_audio_chunks:
+                        logger.info(
+                            "LIVE_ACTIVITY_END_NO_AUDIO session_id=%s",
+                            session_id,
+                        )
+                        continue
+                    queue = await start_new_turn(trigger="activity_end")
+                    queue.send_activity_start()
+                    for chunk in buffered_audio_chunks:
+                        queue.send_realtime(
+                            types.Blob(
+                                mime_type="audio/pcm;rate=16000",
+                                data=chunk,
+                            )
+                        )
+                    queue.send_activity_end()
+                    logger.info(
+                        "LIVE_ACTIVITY_AUDIO_FLUSH session_id=%s chunks=%s bytes=%s",
+                        session_id,
+                        len(buffered_audio_chunks),
+                        buffered_audio_bytes,
+                    )
+                    buffered_audio_chunks.clear()
+                    buffered_audio_bytes = 0
                     logger.info("LIVE_ACTIVITY_END session_id=%s", session_id)
 
     try:

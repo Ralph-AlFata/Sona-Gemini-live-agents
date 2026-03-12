@@ -13,8 +13,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from dsl import apply_command
 from models import (
-    BatchDrawRequest,
-    BatchDrawResponse,
     ClearPayload,
     ClearRequest,
     DrawCommandRequest,
@@ -155,51 +153,6 @@ async def draw(body: DrawCommandRequest) -> DrawResponse:
         delivered,
     )
     return response
-
-@app.post(
-    "/draw/batch",
-    response_model=BatchDrawResponse,
-    status_code=status.HTTP_200_OK,
-    tags=["drawing"],
-)
-async def draw_batch(body: BatchDrawRequest) -> BatchDrawResponse:
-    """Apply a batch of draw commands sequentially in a single HTTP call."""
-    all_results: list[DrawResponse] = []
-    all_created: list[str] = []
-    total_applied = 0
-    total_failed = 0
-    total_emitted = 0
-    session_id = body.commands[0].session_id
-
-    for command in body.commands:
-        messages, response = await apply_command(command, _store)
-        all_results.append(response)
-        all_created.extend(response.created_element_ids)
-        total_applied += response.applied_count
-        total_failed += len(response.failed_operations)
-        total_emitted += len(messages)
-
-        for message in messages:
-            await manager.broadcast(command.session_id, message.model_dump(mode="json"))
-
-    logger.info(
-        "Batch accepted: session_id=%s commands=%d applied=%d created=%d failed=%d emitted=%d",
-        session_id,
-        len(body.commands),
-        total_applied,
-        len(all_created),
-        total_failed,
-        total_emitted,
-    )
-    return BatchDrawResponse(
-        session_id=session_id,
-        results=all_results,
-        total_applied=total_applied,
-        total_created_element_ids=all_created,
-        total_failed=total_failed,
-        total_emitted=total_emitted,
-    )
-
 
 @app.post(
     "/draw/clear",

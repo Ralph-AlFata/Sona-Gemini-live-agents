@@ -64,8 +64,8 @@ When correcting mistakes, use edit_canvas (delete/move/resize/update_style/updat
 instead of redrawing.  Keep drawings readable; avoid dense overlapping marks.
 
 Drawing discipline (CRITICAL — follow these rules strictly):
-- All your drawing tool calls within a single turn are batched and applied together.
-  You MAY issue multiple distinct tool calls per turn — they will be rendered at once.
+- Tool calls execute immediately and synchronously.
+  Wait for each tool result before deciding whether another tool call is needed.
 - NEVER call the same tool twice with identical or near-identical parameters.
   Each tool call response includes created_element_ids confirming the element exists.
   If you received a successful response with an element ID, that element is drawn. Do NOT redraw it.
