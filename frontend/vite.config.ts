@@ -26,6 +26,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/orchestrator/, ""),
       },
+      "/api/session": {
+        target: "http://localhost:8003",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/session/, ""),
+      },
     },
   },
 });

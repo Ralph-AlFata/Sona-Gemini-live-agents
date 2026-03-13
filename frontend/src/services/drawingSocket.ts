@@ -26,14 +26,17 @@ let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let currentSessionId: string | null = null;
+let currentAuthToken: string | null = null;
 let onMessageCallback: OnMessage | null = null;
 let onStatusCallback: OnStatus | null = null;
 let intentionalClose = false;
 
-function getWsUrl(sessionId: string): string {
+function getWsUrl(sessionId: string, authToken: string | null): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host = window.location.host;
-  return `${protocol}//${host}/ws/drawing/${sessionId}`;
+  const base = `${protocol}//${host}/ws/drawing/${sessionId}`;
+  if (!authToken) return base;
+  return `${base}?auth_token=${encodeURIComponent(authToken)}`;
 }
 
 function setStatus(status: ConnectionStatus): void {
@@ -49,22 +52,25 @@ function scheduleReconnect(): void {
 
   reconnectTimer = setTimeout(() => {
     if (currentSessionId) {
-      openSocket(currentSessionId);
+      openSocket(currentSessionId, currentAuthToken);
     }
   }, delay);
 }
 
-function openSocket(sessionId: string): void {
+function openSocket(sessionId: string, authToken: string | null): void {
   setStatus("connecting");
 
-  const ws = new WebSocket(getWsUrl(sessionId));
+  const ws = new WebSocket(getWsUrl(sessionId, authToken));
+  socket = ws;
 
   ws.onopen = () => {
+    if (socket !== ws) return;
     reconnectAttempt = 0;
     setStatus("connected");
   };
 
   ws.onmessage = (event: MessageEvent) => {
+    if (socket !== ws) return;
     try {
       const data: DSLMessageRaw = JSON.parse(event.data as string);
       onMessageCallback?.(data);
@@ -74,6 +80,7 @@ function openSocket(sessionId: string): void {
   };
 
   ws.onclose = () => {
+    if (socket !== ws) return;
     socket = null;
     if (!intentionalClose) {
       scheduleReconnect();
@@ -83,14 +90,14 @@ function openSocket(sessionId: string): void {
   };
 
   ws.onerror = () => {
+    if (socket !== ws) return;
     // onclose will fire after onerror — reconnect handled there
   };
-
-  socket = ws;
 }
 
 export function connect(
   sessionId: string,
+  authToken: string,
   onMessage: OnMessage,
   onStatus: OnStatus,
 ): void {
@@ -99,15 +106,17 @@ export function connect(
   intentionalClose = false;
   reconnectAttempt = 0;
   currentSessionId = sessionId;
+  currentAuthToken = authToken;
   onMessageCallback = onMessage;
   onStatusCallback = onStatus;
 
-  openSocket(sessionId);
+  openSocket(sessionId, authToken);
 }
 
 export function disconnect(): void {
   intentionalClose = true;
   currentSessionId = null;
+  currentAuthToken = null;
   onMessageCallback = null;
   onStatusCallback = null;
 
@@ -116,9 +125,10 @@ export function disconnect(): void {
     reconnectTimer = null;
   }
 
-  if (socket) {
-    socket.close();
-    socket = null;
+  const socketToClose = socket;
+  socket = null;
+  if (socketToClose) {
+    socketToClose.close();
   }
 
   setStatus("disconnected");

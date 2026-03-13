@@ -47,6 +47,7 @@ let intentionalClose = false;
 
 let currentUserId: string | null = null;
 let currentSessionId: string | null = null;
+let currentAuthToken: string | null = null;
 let currentOptions: LiveRunOptions = {
   proactivity: false,
   affectiveDialog: false,
@@ -69,10 +70,16 @@ function getWsBasePath(): string {
   return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8001`;
 }
 
-function getWsUrl(userId: string, sessionId: string, options: LiveRunOptions): string {
+function getWsUrl(
+  userId: string,
+  sessionId: string,
+  options: LiveRunOptions,
+  authToken: string | null,
+): string {
   const params = new URLSearchParams();
   if (options.proactivity) params.set("proactivity", "true");
   if (options.affectiveDialog) params.set("affective_dialog", "true");
+  if (authToken) params.set("auth_token", authToken);
 
   const basePath = getWsBasePath();
   const wsPath = `${basePath}/ws/${encodeURIComponent(userId)}/${encodeURIComponent(sessionId)}`;
@@ -89,14 +96,19 @@ function scheduleReconnect(): void {
 
   reconnectTimer = setTimeout(() => {
     if (currentUserId && currentSessionId) {
-      openSocket(currentUserId, currentSessionId, currentOptions);
+      openSocket(currentUserId, currentSessionId, currentOptions, currentAuthToken);
     }
   }, delay);
 }
 
-function openSocket(userId: string, sessionId: string, options: LiveRunOptions): void {
+function openSocket(
+  userId: string,
+  sessionId: string,
+  options: LiveRunOptions,
+  authToken: string | null,
+): void {
   setStatus("connecting");
-  const ws = new WebSocket(getWsUrl(userId, sessionId, options));
+  const ws = new WebSocket(getWsUrl(userId, sessionId, options, authToken));
 
   ws.onopen = () => {
     reconnectAttempt = 0;
@@ -131,6 +143,7 @@ function openSocket(userId: string, sessionId: string, options: LiveRunOptions):
 export function connectLive(
   userId: string,
   sessionId: string,
+  authToken: string,
   options: LiveRunOptions,
   onEvent: OnEvent,
   onStatus: OnStatus,
@@ -141,17 +154,19 @@ export function connectLive(
   reconnectAttempt = 0;
   currentUserId = userId;
   currentSessionId = sessionId;
+  currentAuthToken = authToken;
   currentOptions = options;
   onEventCallback = onEvent;
   onStatusCallback = onStatus;
 
-  openSocket(userId, sessionId, options);
+  openSocket(userId, sessionId, options, authToken);
 }
 
 export function disconnectLive(): void {
   intentionalClose = true;
   currentUserId = null;
   currentSessionId = null;
+  currentAuthToken = null;
   onEventCallback = null;
   onStatusCallback = null;
 

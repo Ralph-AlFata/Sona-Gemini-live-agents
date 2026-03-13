@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Stage, Layer, Rect, Text, Line, Shape } from "react-konva";
 import type { Stage as KonvaStage } from "konva/lib/Stage";
 import type { DSLMessageRaw } from "../services/drawingSocket";
-import { postDraw } from "../services/drawingService";
+import { postDraw, type SessionElementSnapshot } from "../services/drawingService";
 import getStroke from "perfect-freehand";
 
 interface PointNorm {
@@ -75,7 +75,9 @@ interface HighlightItem {
 
 interface WhiteboardProps {
   messages: DSLMessageRaw[];
+  initialElements: SessionElementSnapshot[];
   sessionId: string;
+  authToken: string;
 }
 
 const HANDWRITING_FONT = '"Patrick Hand", "Comic Sans MS", cursive';
@@ -286,7 +288,7 @@ function toGraphViewport(value: unknown): GraphViewport | null {
   };
 }
 
-export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
+export function Whiteboard({ messages, initialElements, sessionId, authToken }: WhiteboardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<KonvaStage | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
@@ -517,12 +519,13 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
       localPointsRef.current = [];
       setLocalStroke([]);
       if (points.length < 2) return;
+      const elementId = `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
       const svgPath = computeFreehandPath(points, dimensions.width, 3);
       setStrokes((prev) => [
         ...prev,
         {
           id: `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-          elementId: `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+          elementId,
           points,
           color: "#111",
           strokeWidth: 2,
@@ -531,6 +534,23 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
           svgPath,
         },
       ]);
+      void postDraw(
+        sessionId,
+        "draw_freehand",
+        {
+          points,
+          style: {
+            stroke_color: "#111111",
+            stroke_width: 2,
+            delay_ms: 0,
+            animate: false,
+          },
+        },
+        authToken,
+        { elementId },
+      ).catch(() => {
+        // Keep optimistic local stroke even if persistence fails.
+      });
     } else if (toolMode === "select" && isDraggingRef.current && selectedElementId) {
       const end = getNormalizedPointer();
       const start = dragStartRef.current;
@@ -542,7 +562,7 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
             element_ids: [selectedElementId],
             dx,
             dy,
-          });
+          }, authToken);
         }
       }
       isDraggingRef.current = false;
@@ -795,6 +815,83 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
   }, []);
 
   useEffect(() => {
+    processedCountRef.current = 0;
+    queueRef.current = [];
+    setGraphViewport(null);
+    setLocalStroke([]);
+    setSelectedElementId(null);
+    localPointsRef.current = [];
+
+    const nextText: TextItem[] = [];
+    const nextStrokes: StrokeItem[] = [];
+    const nextHighlights: HighlightItem[] = [];
+
+    for (const element of initialElements) {
+      const payload = element.payload;
+      if (!payload || typeof payload !== "object") continue;
+
+      if (element.element_type === "text") {
+        nextText.push({
+          id: `text-${element.element_id}`,
+          elementId: element.element_id,
+          text: asString(payload["text"], ""),
+          x: asNumber(payload["x"], 0),
+          y: asNumber(payload["y"], 0),
+          fontSize: asNumber(payload["font_size"], 18),
+          color: asString(payload["color"], "#000"),
+        });
+        continue;
+      }
+
+      if (element.element_type === "highlight") {
+        const targetElementIds = asStringArray(payload["target_element_ids"]);
+        nextHighlights.push({
+          id: `highlight-${element.element_id}`,
+          elementId: element.element_id,
+          x: asNumber(payload["x"], 0),
+          y: asNumber(payload["y"], 0),
+          width: asNumber(payload["width"], 0),
+          height: asNumber(payload["height"], 0),
+          color: asString(payload["fill_color"], asString(payload["color"], "rgba(255,255,0,0.3)")),
+          targetElementIds: targetElementIds.length ? targetElementIds : undefined,
+          padding: targetElementIds.length ? asNumber(payload["padding"], 0.02) : undefined,
+        });
+        continue;
+      }
+
+      if (element.element_type === "freehand" || element.element_type === "shape") {
+        const pointsRaw = payload["points"];
+        if (!Array.isArray(pointsRaw)) continue;
+        const points = pointsRaw
+          .map((point) => toPointNorm(point))
+          .filter((point): point is PointNorm => point !== null);
+        if (points.length < 2) continue;
+        const strokeWidth = asNumber(payload["stroke_width"], 2);
+        nextStrokes.push({
+          id: `${element.element_type}-${element.element_id}`,
+          elementId: element.element_id,
+          points,
+          color: asString(payload["color"], "#111"),
+          strokeWidth,
+          owner: "agent",
+          elementType: element.element_type,
+          svgPath: element.element_type === "freehand" && dimensions.width > 0
+            ? computeFreehandPath(points, dimensions.width, strokeWidth * 1.5)
+            : undefined,
+          highlightKind: asHighlightKind(payload["highlight_kind"]) ?? undefined,
+          highlightPart: asHighlightPart(payload["highlight_part"]) ?? undefined,
+          targetElementIds: asStringArray(payload["target_element_ids"]),
+          padding: asNumber(payload["padding"], 0.02),
+        });
+      }
+    }
+
+    setTextItems(nextText);
+    setStrokes(nextStrokes);
+    setHighlights(nextHighlights);
+  }, [dimensions.width, initialElements]);
+
+  useEffect(() => {
     setHighlights((prev) => {
       let changed = false;
       const next = prev.map((highlight) => {
@@ -856,6 +953,11 @@ export function Whiteboard({ messages, sessionId }: WhiteboardProps) {
   }, [textItems, strokes, highlights, dimensions.width, dimensions.height]);
 
   useEffect(() => {
+    if (messages.length < processedCountRef.current) {
+      processedCountRef.current = 0;
+      queueRef.current = [];
+      return;
+    }
     if (messages.length <= processedCountRef.current) return;
     queueRef.current.push(...messages.slice(processedCountRef.current));
     processedCountRef.current = messages.length;
