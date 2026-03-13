@@ -109,13 +109,16 @@ function openSocket(
 ): void {
   setStatus("connecting");
   const ws = new WebSocket(getWsUrl(userId, sessionId, options, authToken));
+  socket = ws;
 
   ws.onopen = () => {
+    if (socket !== ws) return;
     reconnectAttempt = 0;
     setStatus("connected");
   };
 
   ws.onmessage = (event: MessageEvent) => {
+    if (socket !== ws) return;
     try {
       const parsed = JSON.parse(String(event.data)) as LiveEventPayload;
       onEventCallback?.(parsed);
@@ -125,6 +128,7 @@ function openSocket(
   };
 
   ws.onclose = () => {
+    if (socket !== ws) return;
     socket = null;
     if (intentionalClose) {
       setStatus("disconnected");
@@ -134,10 +138,9 @@ function openSocket(
   };
 
   ws.onerror = () => {
+    if (socket !== ws) return;
     // onclose handles reconnect behavior.
   };
-
-  socket = ws;
 }
 
 export function connectLive(
@@ -175,10 +178,13 @@ export function disconnectLive(): void {
     reconnectTimer = null;
   }
 
-  if (socket) {
-    socket.close();
-    socket = null;
+  const socketToClose = socket;
+  socket = null;
+  if (socketToClose) {
+    socketToClose.close();
   }
+
+  setStatus("disconnected");
 }
 
 export function sendAudioChunk(chunk: ArrayBuffer): boolean {

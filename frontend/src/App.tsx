@@ -29,6 +29,18 @@ import {
 } from "./services/sessionService";
 import "./App.css";
 
+const MOBILE_SIDEBAR_QUERY = "(max-width: 980px)";
+
+function isMobileSidebarViewport(): boolean {
+  return window.matchMedia(MOBILE_SIDEBAR_QUERY).matches;
+}
+
+function displaySessionName(session: SessionRecord): string {
+  const label = session.topic?.trim();
+  if (label && label.length > 0) return label;
+  return `Session ${session.session_id.slice(0, 6)}`;
+}
+
 export function App() {
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
@@ -40,20 +52,26 @@ export function App() {
   const [sessionElements, setSessionElements] = useState<SessionElementSnapshot[]>([]);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
-  const [sessionNameDraft, setSessionNameDraft] = useState("");
   const [sessionsBusy, setSessionsBusy] = useState(false);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sessionMenuId, setSessionMenuId] = useState<string | null>(null);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.session_id === activeSessionId) ?? null,
     [activeSessionId, sessions],
   );
   const sessionId = activeSession?.session_id ?? "";
+  const showSidebarBackdrop = sidebarOpen && isMobileSidebarViewport();
   const activeSessionIdRef = useRef("");
 
   useEffect(() => {
     activeSessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    setSessionMenuId(null);
+  }, [activeSessionId]);
 
   const handleMessage = useCallback((msg: DSLMessageRaw) => {
     if (msg.session_id !== activeSessionIdRef.current) return;
@@ -73,24 +91,24 @@ export function App() {
     activeSessionIdRef.current = "";
     setSessions([]);
     setActiveSessionId("");
-    setSessionNameDraft("");
     setSessionsError(null);
     setMessages([]);
     setSessionElements([]);
     setStatus("disconnected");
+    setSidebarOpen(false);
+    setSessionMenuId(null);
   }, []);
 
   const switchSessionView = useCallback((next: SessionRecord | null) => {
     activeSessionIdRef.current = next?.session_id ?? "";
     setMessages([]);
     setSessionElements([]);
+    setSessionMenuId(null);
     if (!next) {
       setActiveSessionId("");
-      setSessionNameDraft("");
       return;
     }
     setActiveSessionId(next.session_id);
-    setSessionNameDraft(next.topic ?? "");
   }, []);
 
   const handleAuthFailure = useCallback(
@@ -252,6 +270,7 @@ export function App() {
           : await signUpWithEmail(cleanedEmail, password)
       );
       setAuthSession(nextSession);
+      setSidebarOpen(false);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Authentication failed");
     } finally {
@@ -268,6 +287,9 @@ export function App() {
   function handleSelectSession(sessionIdFromUi: string): void {
     const selected = sessions.find((session) => session.session_id === sessionIdFromUi) ?? null;
     switchSessionView(selected);
+    if (isMobileSidebarViewport()) {
+      setSidebarOpen(false);
+    }
   }
 
   async function handleCreateSession(): Promise<void> {
@@ -281,6 +303,9 @@ export function App() {
       const created = await createSession(fresh.idToken, fresh.userId, requestedName);
       setSessions((prev) => [created, ...prev]);
       switchSessionView(created);
+      if (isMobileSidebarViewport()) {
+        setSidebarOpen(false);
+      }
     } catch (error) {
       if (isAuthExpiredError(error)) {
         handleAuthFailure("Session expired. Please sign in again.");
@@ -292,9 +317,14 @@ export function App() {
     }
   }
 
-  async function handleRenameSession(): Promise<void> {
-    if (!authSession || !activeSession) return;
-    const cleanedName = sessionNameDraft.trim();
+  async function handleRenameSession(target: SessionRecord): Promise<void> {
+    if (!authSession) return;
+    const requestedName = window.prompt(
+      "Rename session:",
+      target.topic?.trim() || displaySessionName(target),
+    );
+    if (requestedName === null) return;
+    const cleanedName = requestedName.trim();
     if (!cleanedName) {
       setSessionsError("Session name cannot be empty");
       return;
@@ -303,11 +333,11 @@ export function App() {
     setSessionsError(null);
     try {
       const fresh = await refreshAuthSession(authSession);
-      const updated = await renameSession(fresh.idToken, activeSession.session_id, cleanedName);
+      const updated = await renameSession(fresh.idToken, target.session_id, cleanedName);
       setSessions((prev) =>
         prev.map((item) => (item.session_id === updated.session_id ? updated : item)),
       );
-      setSessionNameDraft(updated.topic ?? "");
+      setSessionMenuId(null);
     } catch (error) {
       if (isAuthExpiredError(error)) {
         handleAuthFailure("Session expired. Please sign in again.");
@@ -319,10 +349,10 @@ export function App() {
     }
   }
 
-  async function handleDeleteSession(): Promise<void> {
-    if (!authSession || !activeSession) return;
+  async function handleDeleteSession(target: SessionRecord): Promise<void> {
+    if (!authSession) return;
     const confirmed = window.confirm(
-      `Delete session "${activeSession.topic ?? activeSession.session_id}"?`,
+      `Delete session "${target.topic?.trim() || target.session_id}"?`,
     );
     if (!confirmed) return;
 
@@ -330,20 +360,26 @@ export function App() {
     setSessionsError(null);
     try {
       const fresh = await refreshAuthSession(authSession);
-      await deleteSession(fresh.idToken, activeSession.session_id);
-      const remaining = sessions.filter((item) => item.session_id !== activeSession.session_id);
-      if (remaining.length > 0) {
-        const next = remaining[0];
-        if (!next) {
-          throw new Error("Failed to select next session after delete");
+      await deleteSession(fresh.idToken, target.session_id);
+
+      const remaining = sessions.filter((item) => item.session_id !== target.session_id);
+      const deletedActive = target.session_id === activeSession?.session_id;
+      setSessions(remaining);
+
+      if (deletedActive) {
+        if (remaining.length > 0) {
+          const next = remaining[0];
+          if (!next) {
+            throw new Error("Failed to select next session after delete");
+          }
+          switchSessionView(next);
+        } else {
+          const created = await createSession(fresh.idToken, fresh.userId, "New session");
+          setSessions([created]);
+          switchSessionView(created);
         }
-        setSessions(remaining);
-        switchSessionView(next);
-      } else {
-        const created = await createSession(fresh.idToken, fresh.userId, "New session");
-        setSessions([created]);
-        switchSessionView(created);
       }
+      setSessionMenuId(null);
     } catch (error) {
       if (isAuthExpiredError(error)) {
         handleAuthFailure("Session expired. Please sign in again.");
@@ -410,85 +446,166 @@ export function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <span className="app-title">Sona</span>
-        <span className={`status-dot status-${status}`} />
-        <span className="status-label">{status}</span>
-        <span className="status-label">{authSession.email}</span>
-        <label className="session-picker-wrap">
-          session
-          <select
-            value={activeSessionId}
-            onChange={(event) => handleSelectSession(event.target.value)}
-            disabled={sessionsBusy || sessions.length === 0}
+        <div className="header-left">
+          <button
+            className="nav-toggle"
+            aria-label={sidebarOpen ? "Close sessions" : "Open sessions"}
+            onClick={() => {
+              setSidebarOpen((prev) => !prev);
+            }}
           >
-            {sessions.map((session) => (
-              <option key={session.session_id} value={session.session_id}>
-                {session.topic?.trim() || session.session_id}
-              </option>
-            ))}
-          </select>
-        </label>
-        <input
-          className="session-name-input"
-          value={sessionNameDraft}
-          onChange={(event) => setSessionNameDraft(event.target.value)}
-          placeholder="Session name"
-          disabled={!activeSessionId || sessionsBusy}
-        />
-        <button
-          className="header-btn"
-          onClick={() => {
-            void handleRenameSession();
-          }}
-          disabled={!activeSessionId || sessionsBusy}
-        >
-          Rename
-        </button>
-        <button
-          className="header-btn"
-          onClick={() => {
-            void handleCreateSession();
-          }}
-          disabled={sessionsBusy}
-        >
-          New
-        </button>
-        <button
-          className="header-btn danger"
-          onClick={() => {
-            void handleDeleteSession();
-          }}
-          disabled={!activeSessionId || sessionsBusy}
-        >
-          Delete
-        </button>
-        <button className="header-logout" onClick={handleSignOut}>Sign Out</button>
+            <span />
+            <span />
+            <span />
+          </button>
+          <div className="brand-stack">
+            <span className="app-title">Sona</span>
+            <span className="app-subtitle">
+              {activeSession ? displaySessionName(activeSession) : "Live whiteboard tutor"}
+            </span>
+          </div>
+        </div>
+
+        <div className="header-right">
+          <span className={`status-pill status-${status}`}>
+            <span className="status-dot" />
+            {status}
+          </span>
+          <span className="header-email" title={authSession.email}>
+            {authSession.email}
+          </span>
+          <button className="header-logout" onClick={handleSignOut}>Sign Out</button>
+        </div>
       </header>
+
       {sessionsError ? <div className="session-error">{sessionsError}</div> : null}
 
-      <main className="app-canvas">
-        <section className="canvas-shell">
-          {sessionId ? (
-            <Whiteboard
-              key={sessionId}
-              messages={messages}
-              initialElements={sessionElements}
-              sessionId={sessionId}
-              authToken={authSession.idToken}
-            />
-          ) : (
-            <div className="canvas-empty">Create or select a session to start.</div>
-          )}
-        </section>
-        {sessionId ? (
-          <ChatPanel
-            key={sessionId}
-            userId={authSession.userId}
-            sessionId={sessionId}
-            authToken={authSession.idToken}
+      <div className={`app-layout ${sidebarOpen ? "sidebar-open" : ""}`}>
+        <aside className={`session-sidebar ${sidebarOpen ? "open" : ""}`}>
+          <div className="session-sidebar-header">
+            <h2>Your Sessions</h2>
+            <button
+              className="session-new-btn"
+              onClick={() => {
+                void handleCreateSession();
+              }}
+              disabled={sessionsBusy}
+            >
+              + New
+            </button>
+          </div>
+
+          <div className="session-list-wrap">
+            {sessions.length === 0 ? (
+              <p className="session-empty">No sessions yet.</p>
+            ) : (
+              <ul className="session-list">
+                {sessions.map((session) => {
+                  const isActive = session.session_id === activeSessionId;
+                  const isMenuOpen = sessionMenuId === session.session_id;
+                  return (
+                    <li
+                      key={session.session_id}
+                      className={`session-list-item ${isActive ? "active" : ""}`}
+                    >
+                      <button
+                        className="session-select-btn"
+                        onClick={() => handleSelectSession(session.session_id)}
+                      >
+                        <span className="session-title">{displaySessionName(session)}</span>
+                        <span className="session-meta">{session.session_id.slice(0, 8)}</span>
+                      </button>
+
+                      <div className={`session-row-actions ${isMenuOpen ? "open" : ""}`}>
+                        <button
+                          className="session-action-btn"
+                          title="Session menu"
+                          aria-label="Open session options"
+                          onClick={() => {
+                            setSessionMenuId((prev) =>
+                              prev === session.session_id ? null : session.session_id,
+                            );
+                          }}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="6" cy="12" r="1.5" />
+                            <circle cx="12" cy="12" r="1.5" />
+                            <circle cx="18" cy="12" r="1.5" />
+                          </svg>
+                        </button>
+                        <button
+                          className="session-action-btn danger"
+                          title="Delete session"
+                          aria-label="Delete session"
+                          onClick={() => {
+                            void handleDeleteSession(session);
+                          }}
+                          disabled={sessionsBusy}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M4 7h16" />
+                            <path d="M9 7V5h6v2" />
+                            <path d="M8 7l1 12h6l1-12" />
+                            <path d="M10 11v5" />
+                            <path d="M14 11v5" />
+                          </svg>
+                        </button>
+                      </div>
+
+                      {isMenuOpen ? (
+                        <div className="session-popover">
+                          <button
+                            onClick={() => {
+                              void handleRenameSession(session);
+                            }}
+                            disabled={sessionsBusy}
+                          >
+                            Rename
+                          </button>
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </aside>
+
+        {showSidebarBackdrop ? (
+          <button
+            className="sidebar-backdrop"
+            aria-label="Close sessions"
+            onClick={() => setSidebarOpen(false)}
           />
         ) : null}
-      </main>
+
+        <section className="workspace-main">
+          <main className="app-canvas">
+            <section className="canvas-shell">
+              {sessionId ? (
+                <Whiteboard
+                  key={sessionId}
+                  messages={messages}
+                  initialElements={sessionElements}
+                  sessionId={sessionId}
+                  authToken={authSession.idToken}
+                />
+              ) : (
+                <div className="canvas-empty">Create or select a session to start.</div>
+              )}
+            </section>
+            {sessionId ? (
+              <ChatPanel
+                key={sessionId}
+                userId={authSession.userId}
+                sessionId={sessionId}
+                authToken={authSession.idToken}
+              />
+            ) : null}
+          </main>
+        </section>
+      </div>
 
       <MessageLog messages={messages} />
     </div>
