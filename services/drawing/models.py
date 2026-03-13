@@ -319,6 +319,20 @@ class DrawResponse(_StrictBase):
     emitted_count: int = Field(ge=0)
     dsl_messages: list[DSLMessage] = Field(default_factory=list)
 
+
+class SessionStateResponse(_StrictBase):
+    session_id: str
+    element_count: int = Field(ge=0)
+    dsl_messages: list[DSLMessage] = Field(default_factory=list)
+
+
+class SessionElementSnapshot(_StrictBase):
+    session_id: str
+    element_id: str
+    element_type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class ClearRequest(_StrictBase):
     session_id: str = Field(min_length=1, max_length=128)
 

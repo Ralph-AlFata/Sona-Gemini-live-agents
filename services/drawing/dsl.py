@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+from datetime import datetime, timezone
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,10 @@ def _next_message_id() -> str:
 
 def _next_element_id() -> str:
     return f"el_{uuid4().hex[:12]}"
+
+
+def _now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
 
 
 def _clamp(value: float, upper: float = 1.0) -> float:
@@ -127,6 +132,22 @@ def _translate_style_for_frontend(style: dict) -> dict:
         "delay_ms": style.get("delay_ms", 30),
         "animate": bool(style.get("animate", True)),
     }
+
+
+def element_to_frontend_payload(element: StoredElement) -> dict:
+    """
+    Convert a stored element payload into the flattened frontend DSL shape.
+
+    Stored elements keep style in nested `payload.style`; `element_created`
+    messages expect style fields flattened (color/stroke_width/etc).
+    """
+    payload = dict(element.payload)
+    raw_style = payload.pop("style", {})
+    style = dict(raw_style) if isinstance(raw_style, dict) else {}
+    translated = _translate_style_for_frontend(style)
+    for key, value in translated.items():
+        payload.setdefault(key, value)
+    return payload
 
 
 def _create_message(command: DrawCommandRequest, message_type: str, payload: dict) -> DSLMessage:
@@ -324,6 +345,7 @@ async def apply_command(
     elif isinstance(payload, DrawShapePayload):
         element_id = command.element_id or _next_element_id()
         draw_payload, bbox = _build_shape_element(payload)
+        draw_payload["created_at"] = _now_iso()
         element = StoredElement(
             element_id=element_id,
             element_type="shape",
@@ -353,6 +375,7 @@ async def apply_command(
     elif isinstance(payload, DrawTextPayload):
         element_id = command.element_id or _next_element_id()
         draw_payload, bbox = _build_text_element(payload)
+        draw_payload["created_at"] = _now_iso()
         element = StoredElement(
             element_id=element_id,
             element_type="text",
@@ -384,6 +407,7 @@ async def apply_command(
     elif isinstance(payload, DrawFreehandPayload):
         element_id = command.element_id or _next_element_id()
         draw_payload, bbox = _build_freehand_element(payload)
+        draw_payload["created_at"] = _now_iso()
         element = StoredElement(
             element_id=element_id,
             element_type="freehand",
@@ -457,6 +481,7 @@ async def apply_command(
                     "style": style_dict,
                     "target_element_ids": target_ids,
                     "padding": pad,
+                    "created_at": _now_iso(),
                 }
                 el = StoredElement(
                     element_id=eid,
@@ -494,6 +519,7 @@ async def apply_command(
                         "highlight_part": "ellipse",
                         "target_element_ids": target_ids,
                         "padding": pad,
+                        "created_at": _now_iso(),
                     },
                     bbox=BBox(ux, uy, uw, uh),
                 )
@@ -530,6 +556,7 @@ async def apply_command(
                         "highlight_part": "ellipse",
                         "target_element_ids": target_ids,
                         "padding": pad,
+                        "created_at": _now_iso(),
                     },
                     bbox=BBox(ux, uy, uw, uh),
                 )
@@ -568,6 +595,7 @@ async def apply_command(
                             "highlight_part": "arrow",
                             "target_element_ids": target_ids,
                             "padding": pad,
+                            "created_at": _now_iso(),
                         },
                         bbox=BBox(cx, arrow_tip_y, 0.001, arrow_start_y - arrow_tip_y),
                     )
