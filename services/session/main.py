@@ -20,10 +20,11 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, UploadFile, status
+from fastapi import FastAPI, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
+from auth import get_auth_context, SessionAuthMiddleware
 import firestore as fs
 import storage as st
 from models import (
@@ -83,17 +84,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SessionAuthMiddleware)
 
 
 # ─── Shared helper ────────────────────────────────────────────────────────────
 
-async def _get_session_or_404(session_id: str) -> Session:
+def _request_auth_context(request: Request):
+    auth_context = get_auth_context(request)
+    auth_enabled = bool(getattr(request.state, "session_auth_enabled", False))
+    if auth_enabled and auth_context is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
+    return auth_context
+
+
+def _ensure_session_ownership(session: Session, request: Request) -> None:
+    """Restrict session access to the authenticated student when auth is enabled."""
+    auth_context = _request_auth_context(request)
+    if auth_context is None:
+        return
+    if session.student_id != auth_context.student_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Session '{session.session_id}' does not belong to the authenticated user",
+        )
+
+
+async def _get_session_or_404(session_id: str, request: Request) -> Session:
     session = await fs.get_session(session_id)
     if session is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Session '{session_id}' not found",
         )
+    _ensure_session_ownership(session, request)
     return session
 
 
@@ -113,23 +139,37 @@ async def health_check() -> HealthResponse:
     status_code=status.HTTP_201_CREATED,
     tags=["sessions"],
 )
-async def create_session(payload: SessionCreate) -> Session:
+async def create_session(payload: SessionCreate, request: Request) -> Session:
     """Create a new Session document in Firestore."""
+    auth_context = _request_auth_context(request)
+    effective_student_id = (
+        auth_context.student_id
+        if auth_context is not None
+        else payload.student_id
+    )
+    create_payload = payload.model_copy(update={"student_id": effective_student_id})
+
     try:
-        session = await fs.create_session(payload)
+        session = await fs.create_session(create_payload)
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     except Exception as exc:
         logger.exception("Failed to create session")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create session",
         ) from exc
+    _ensure_session_ownership(session, request)
     return session
 
 
 @app.get("/sessions/{session_id}", response_model=Session, tags=["sessions"])
-async def get_session(session_id: str) -> Session:
+async def get_session(session_id: str, request: Request) -> Session:
     """Fetch a session document. Returns 404 if not found."""
-    return await _get_session_or_404(session_id)
+    return await _get_session_or_404(session_id, request=request)
 
 
 @app.post(
@@ -138,9 +178,9 @@ async def get_session(session_id: str) -> Session:
     status_code=status.HTTP_200_OK,
     tags=["sessions"],
 )
-async def append_turn(session_id: str, payload: AppendTurnRequest) -> Session:
+async def append_turn(session_id: str, payload: AppendTurnRequest, request: Request) -> Session:
     """Append a ConversationTurn to the session's turns array. Returns the updated session."""
-    await _get_session_or_404(session_id)
+    await _get_session_or_404(session_id, request=request)
     turn = ConversationTurn(
         role=payload.role,
         content=payload.content,
@@ -163,9 +203,13 @@ async def append_turn(session_id: str, payload: AppendTurnRequest) -> Session:
     status_code=status.HTTP_200_OK,
     tags=["sessions"],
 )
-async def upload_snapshot(session_id: str, file: UploadFile) -> SnapshotUploadResponse:
+async def upload_snapshot(
+    session_id: str,
+    file: UploadFile,
+    request: Request,
+) -> SnapshotUploadResponse:
     """Upload a PNG canvas snapshot to GCS and update the session's latest_snapshot."""
-    await _get_session_or_404(session_id)
+    await _get_session_or_404(session_id, request=request)
 
     if file.content_type not in ("image/png", "application/octet-stream"):
         raise HTTPException(
@@ -206,8 +250,9 @@ async def upload_snapshot(session_id: str, file: UploadFile) -> SnapshotUploadRe
     status_code=status.HTTP_204_NO_CONTENT,
     tags=["sessions"],
 )
-async def delete_session(session_id: str) -> Response:
+async def delete_session(session_id: str, request: Request) -> Response:
     """Delete a session document. Returns 204 on success, 404 if not found."""
+    await _get_session_or_404(session_id, request=request)
     deleted = await fs.delete_session(session_id)
     if not deleted:
         raise HTTPException(

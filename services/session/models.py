@@ -97,9 +97,12 @@ class SessionCreate(_StrictBase):
         max_length=120,
         description="Optional caller-supplied session identifier",
     )
-    student_id: str = Field(
-        default_factory=lambda: f"student_{uuid4().hex[:8]}",
-        description="Caller-supplied or auto-generated student identifier",
+    student_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional student identifier. "
+            "Ignored when SESSION_AUTH_ENABLED=true (derived from token claims)."
+        ),
     )
     topic: str | None = Field(
         default=None,

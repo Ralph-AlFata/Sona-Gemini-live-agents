@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+from auth import AuthContext
 from models import CanvasSnapshot, Session, SessionCreate
 
 
@@ -104,6 +105,31 @@ def test_create_session_with_caller_session_id(client: TestClient) -> None:
     assert response.status_code == 201
     body = response.json()
     assert body["session_id"] == "dev-session"
+
+
+def test_create_session_uses_authenticated_student_id(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        main,
+        "_request_auth_context",
+        lambda _request: AuthContext(
+            student_id="token-student",
+            claims={"sub": "token-student"},
+        ),
+    )
+    response = client.post(
+        "/sessions",
+        json={
+            "student_id": "spoofed-student",
+            "topic": "probability",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["student_id"] == "token-student"
 
 
 def test_get_session_not_found(client: TestClient) -> None:
