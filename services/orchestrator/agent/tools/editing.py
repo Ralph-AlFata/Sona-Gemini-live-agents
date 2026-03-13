@@ -10,6 +10,7 @@ from agent.tools.models import (
     EraseRegionInput,
     MoveElementsInput,
     ResizeElementsInput,
+    SetShapeLabelsInput,
     UpdatePointsInput,
     UpdateStyleInput,
 )
@@ -138,3 +139,28 @@ async def update_element_style(
         payload=data.model_dump(mode="json"),
     )
     return result_to_dict(result)
+
+
+async def set_shape_labels(
+    element_id: str,
+    labels: list[str],
+    font_size: int = 22,
+    tool_context: ToolContext | None = None,
+) -> dict:
+    """Attach or replace side labels on an existing shape element."""
+    data = SetShapeLabelsInput.model_validate(
+        {
+            "element_id": element_id,
+            "labels": labels,
+            "font_size": font_size,
+        }
+    )
+    result = await execute_tool_command(
+        session_id=resolve_session_id(tool_context),
+        operation="set_shape_labels",
+        payload=data.model_dump(mode="json"),
+    )
+    response = result_to_dict(result)
+    response["shape_id"] = element_id
+    response["label_ids"] = result.created_element_ids
+    return response

@@ -197,6 +197,12 @@ class UpdateStylePayload(_StrictBase):
         return self
 
 
+class SetShapeLabelsPayload(_StrictBase):
+    element_id: str = Field(min_length=1, max_length=128)
+    labels: list[str] = Field(default_factory=list, max_length=64)
+    font_size: int = Field(default=22, ge=8, le=256)
+
+
 DrawOperation = Literal[
     "draw_shape",
     "draw_text",
@@ -210,6 +216,7 @@ DrawOperation = Literal[
     "resize_elements",
     "update_points",
     "update_style",
+    "set_shape_labels",
 ]
 
 
@@ -226,6 +233,7 @@ DrawPayload = (
     | ResizeElementsPayload
     | UpdatePointsPayload
     | UpdateStylePayload
+    | SetShapeLabelsPayload
 )
 
 
@@ -242,6 +250,7 @@ _PAYLOAD_MODEL_MAP: dict[str, type[BaseModel]] = {
     "resize_elements": ResizeElementsPayload,
     "update_points": UpdatePointsPayload,
     "update_style": UpdateStylePayload,
+    "set_shape_labels": SetShapeLabelsPayload,
 }
 
 

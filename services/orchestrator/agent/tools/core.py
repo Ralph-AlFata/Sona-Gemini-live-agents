@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 from google.adk.tools import ToolContext
 
 from agent.tools._shared import execute_tool_command, resolve_session_id, result_to_dict
@@ -104,6 +102,7 @@ def shape_to_points(
 async def draw_shape(
     shape: str,
     points: list[dict[str, float]],
+    labels: list[str] | None = None,
     stroke_color: str = "#111111",
     stroke_width: float = 2.0,
     fill_color: str | None = None,
@@ -132,11 +131,17 @@ async def draw_shape(
     Invocation condition: Call ONLY when you need to draw a NEW shape that
     does not already exist on the canvas. Never call with the same shape
     and points as a previous successful call in this session.
+
+    `labels` is optional. Each entry maps by index to a side:
+    `labels[0]` labels the segment from `points[0]` to `points[1]`,
+    `labels[1]` labels the segment from `points[1]` to `points[2]`, etc.
+    Use empty strings to skip sides you do not want to label.
     """
     data = DrawShapeInput.model_validate(
         {
             "shape": shape,
             "points": points,
+            "labels": labels or [],
             "style": {
                 "stroke_color": stroke_color,
                 "stroke_width": stroke_width,
@@ -148,12 +153,34 @@ async def draw_shape(
             },
         }
     )
+    session_id = resolve_session_id(tool_context)
     result = await execute_tool_command(
-        session_id=resolve_session_id(tool_context),
+        session_id=session_id,
         operation="draw_shape",
-        payload=data.model_dump(mode="json"),
+        payload=data.model_dump(mode="json", exclude={"labels"}),
     )
-    return result_to_dict(result)
+    response = result_to_dict(result)
+    shape_id = result.created_element_ids[0] if result.created_element_ids else None
+    label_ids: list[str] = []
+
+    if shape_id and data.labels:
+        label_result = await execute_tool_command(
+            session_id=session_id,
+            operation="set_shape_labels",
+            payload={
+                "element_id": shape_id,
+                "labels": data.labels,
+                "font_size": 22,
+            },
+        )
+        label_ids = label_result.created_element_ids
+        response["created_element_ids"].extend(label_result.created_element_ids)
+        response["failed_operations"].extend(label_result.failed_operations)
+        response["applied_count"] += label_result.applied_count
+
+    response["shape_id"] = shape_id
+    response["label_ids"] = label_ids
+    return response
 
 
 async def draw_text(

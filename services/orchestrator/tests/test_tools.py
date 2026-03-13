@@ -24,6 +24,13 @@ class _FakeClient:
         created_ids = []
         if operation in {"draw_shape", "draw_text", "draw_freehand"}:
             created_ids = [f"el_test_{self._counter}"]
+        elif operation == "set_shape_labels":
+            labels = payload.get("labels", [])
+            created_ids = [
+                f"el_test_{self._counter}_{idx}"
+                for idx, label in enumerate(labels)
+                if isinstance(label, str) and label.strip()
+            ]
         self.calls.append(
             {
                 "session_id": session_id,
@@ -75,6 +82,82 @@ async def test_draw_shape_maps_payload(monkeypatch: pytest.MonkeyPatch, _fake_cl
     assert _fake_client.calls[0]["operation"] == "draw_shape"
     assert _fake_client.calls[0]["payload"]["style"]["stroke_color"] == "#ff0000"
     assert len(_fake_client.calls[0]["payload"]["points"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_draw_shape_with_labels_uses_shape_label_edit_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await core.draw_shape(
+        shape="right_triangle",
+        points=[
+            {"x": 0.1, "y": 0.5},
+            {"x": 0.4, "y": 0.5},
+            {"x": 0.1, "y": 0.2},
+            {"x": 0.1, "y": 0.5},
+        ],
+        labels=["a", "b", "c"],
+    )
+
+    assert result["status"] == "success"
+    assert result["shape_id"] == result["created_element_ids"][0]
+    assert len(result["label_ids"]) == 3
+    assert len(result["created_element_ids"]) == 4
+
+    assert [call["operation"] for call in _fake_client.calls] == [
+        "draw_shape",
+        "set_shape_labels",
+    ]
+    assert _fake_client.calls[1]["payload"]["element_id"] == result["shape_id"]
+    assert _fake_client.calls[1]["payload"]["labels"] == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_draw_shape_skips_blank_labels(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await core.draw_shape(
+        shape="triangle",
+        points=[
+            {"x": 0.1, "y": 0.5},
+            {"x": 0.3, "y": 0.2},
+            {"x": 0.5, "y": 0.5},
+            {"x": 0.1, "y": 0.5},
+        ],
+        labels=["a", "", "c"],
+    )
+
+    assert result["status"] == "success"
+    assert len(result["label_ids"]) == 2
+    assert [call["operation"] for call in _fake_client.calls] == [
+        "draw_shape",
+        "set_shape_labels",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_set_shape_labels_maps_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(editing, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await editing.set_shape_labels(
+        element_id="el_shape",
+        labels=["a", "", "c"],
+    )
+
+    assert result["status"] == "success"
+    assert result["shape_id"] == "el_shape"
+    assert _fake_client.calls[0]["operation"] == "set_shape_labels"
+    assert _fake_client.calls[0]["payload"]["element_id"] == "el_shape"
+    assert _fake_client.calls[0]["payload"]["labels"] == ["a", "", "c"]
 
 
 @pytest.mark.asyncio
@@ -168,6 +251,23 @@ def test_draw_shape_rejects_unsupported_shape() -> None:
             {
                 "shape": "hexagon",
                 "points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.2}],
+                "style": {},
+            }
+        )
+
+
+def test_draw_shape_rejects_too_many_labels() -> None:
+    with pytest.raises(ValidationError):
+        DrawShapeInput.model_validate(
+            {
+                "shape": "triangle",
+                "points": [
+                    {"x": 0.1, "y": 0.5},
+                    {"x": 0.3, "y": 0.2},
+                    {"x": 0.5, "y": 0.5},
+                    {"x": 0.1, "y": 0.5},
+                ],
+                "labels": ["a", "b", "c", "d"],
                 "style": {},
             }
         )

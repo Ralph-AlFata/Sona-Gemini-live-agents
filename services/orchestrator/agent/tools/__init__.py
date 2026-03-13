@@ -7,6 +7,7 @@ from agent.tools.editing import (
     erase_region,
     move_elements,
     resize_elements,
+    set_shape_labels,
     update_element_points,
     update_element_style,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "erase_region",
     "move_elements",
     "resize_elements",
+    "set_shape_labels",
     "update_element_points",
     "update_element_style",
     "draw_axes_grid",
