@@ -111,6 +111,16 @@ class SessionCreate(_StrictBase):
     )
 
 
+class SessionRename(_StrictBase):
+    """Request body for PATCH /sessions/{session_id}."""
+
+    topic: str = Field(
+        min_length=1,
+        max_length=120,
+        description="Human-readable session name shown in the frontend session switcher.",
+    )
+
+
 class Session(_StrictBase):
     """Full session document as stored in Firestore and returned by the API."""
 
@@ -224,6 +234,19 @@ class SnapshotUploadResponse(_StrictBase):
 
     session_id: str
     snapshot: CanvasSnapshot
+
+
+class SessionElement(_StrictBase):
+    """Materialized element row under sessions/{session_id}/elements."""
+
+    element_id: str
+    element_type: str
+    payload: dict[str, object] = Field(default_factory=dict)
+    bbox: dict[str, float] | None = None
+    updated_at: str | None = None
+    last_message_id: str | None = None
+    last_message_type: str | None = None
+    session_id: str | None = None
 
 
 class HealthResponse(_StrictBase):

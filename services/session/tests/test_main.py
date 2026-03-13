@@ -9,12 +9,13 @@ from fastapi.testclient import TestClient
 
 import main
 from auth import AuthContext
-from models import CanvasSnapshot, Session, SessionCreate
+from models import CanvasSnapshot, Session, SessionCreate, SessionElement
 
 
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     sessions: dict[str, Session] = {}
+    monkeypatch.setenv("SESSION_AUTH_ENABLED", "false")
 
     def _noop() -> None:
         return None
@@ -34,6 +35,11 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     async def _get_session(session_id: str) -> Session | None:
         return sessions.get(session_id)
 
+    async def _list_sessions_for_student(student_id: str) -> list[Session]:
+        filtered = [s for s in sessions.values() if s.student_id == student_id]
+        filtered.sort(key=lambda item: item.updated_at, reverse=True)
+        return filtered
+
     async def _append_turn(session_id: str, turn: Any) -> Session:
         session = sessions[session_id]
         session.turns.append(turn)
@@ -42,11 +48,30 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         session.updated_at = datetime.now(tz=timezone.utc)
         return session
 
+    async def _update_session_topic(session_id: str, topic: str) -> Session:
+        session = sessions[session_id]
+        session.topic = topic
+        session.updated_at = datetime.now(tz=timezone.utc)
+        return session
+
     async def _update_snapshot_url(session_id: str, snapshot: CanvasSnapshot) -> Session:
         session = sessions[session_id]
         session.latest_snapshot = snapshot
         session.updated_at = datetime.now(tz=timezone.utc)
         return session
+
+    async def _list_session_elements(session_id: str) -> list[SessionElement]:
+        if session_id not in sessions:
+            return []
+        return [
+            SessionElement(
+                session_id=session_id,
+                element_id="el_test_1",
+                element_type="text",
+                payload={"text": "hello", "x": 0.1, "y": 0.2, "color": "#111"},
+                bbox={"x": 0.1, "y": 0.2, "width": 0.2, "height": 0.05},
+            )
+        ]
 
     async def _delete_session(session_id: str) -> bool:
         return sessions.pop(session_id, None) is not None
@@ -63,7 +88,10 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(main.st, "close_storage_client", _noop)
     monkeypatch.setattr(main.fs, "create_session", _create_session)
     monkeypatch.setattr(main.fs, "get_session", _get_session)
+    monkeypatch.setattr(main.fs, "list_sessions_for_student", _list_sessions_for_student)
     monkeypatch.setattr(main.fs, "append_turn", _append_turn)
+    monkeypatch.setattr(main.fs, "update_session_topic", _update_session_topic)
+    monkeypatch.setattr(main.fs, "list_session_elements", _list_session_elements)
     monkeypatch.setattr(main.fs, "update_snapshot_url", _update_snapshot_url)
     monkeypatch.setattr(main.fs, "delete_session", _delete_session)
     monkeypatch.setattr(main.st, "upload_canvas_snapshot", _upload_canvas_snapshot)
@@ -132,9 +160,90 @@ def test_create_session_uses_authenticated_student_id(
     assert body["student_id"] == "token-student"
 
 
+def test_create_session_requires_student_id_without_auth(client: TestClient) -> None:
+    response = client.post("/sessions", json={"topic": "missing student"})
+    assert response.status_code == 400
+    assert "student_id is required" in response.json()["detail"]
+
+
+def test_list_sessions_for_student(client: TestClient) -> None:
+    client.post("/sessions", json={"session_id": "a1", "student_id": "s-list", "topic": "algebra"})
+    client.post("/sessions", json={"session_id": "a2", "student_id": "s-list", "topic": "geometry"})
+    client.post("/sessions", json={"session_id": "b1", "student_id": "other", "topic": "physics"})
+
+    response = client.get("/sessions", params={"student_id": "s-list"})
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body, list)
+    assert len(body) == 2
+    session_ids = {item["session_id"] for item in body}
+    assert session_ids == {"a1", "a2"}
+
+
+def test_list_sessions_requires_student_id_without_auth(client: TestClient) -> None:
+    response = client.get("/sessions")
+    assert response.status_code == 400
+    assert "student_id is required" in response.json()["detail"]
+
+
+def test_list_sessions_uses_authenticated_student_id(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client.post("/sessions", json={"session_id": "auth-1", "student_id": "token-student", "topic": "fractions"})
+    client.post("/sessions", json={"session_id": "auth-2", "student_id": "other-student", "topic": "angles"})
+
+    monkeypatch.setattr(
+        main,
+        "_request_auth_context",
+        lambda _request: AuthContext(
+            student_id="token-student",
+            claims={"sub": "token-student"},
+        ),
+    )
+
+    response = client.get("/sessions")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["session_id"] == "auth-1"
+    assert body[0]["student_id"] == "token-student"
+
+
 def test_get_session_not_found(client: TestClient) -> None:
     response = client.get("/sessions/does-not-exist")
     assert response.status_code == 404
+
+
+def test_rename_session_success(client: TestClient) -> None:
+    created = client.post("/sessions", json={"student_id": "s-rename", "topic": "old name"})
+    session_id = created.json()["session_id"]
+
+    response = client.patch(
+        f"/sessions/{session_id}",
+        json={"topic": "new name"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["topic"] == "new name"
+
+
+def test_rename_session_not_found(client: TestClient) -> None:
+    response = client.patch("/sessions/missing", json={"topic": "new name"})
+    assert response.status_code == 404
+
+
+def test_get_session_elements_success(client: TestClient) -> None:
+    created = client.post("/sessions", json={"student_id": "s-elements", "topic": "elements"})
+    session_id = created.json()["session_id"]
+
+    response = client.get(f"/sessions/{session_id}/elements")
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body, list)
+    assert len(body) == 1
+    assert body[0]["element_id"] == "el_test_1"
+    assert body[0]["element_type"] == "text"
 
 
 def test_append_turn_success(client: TestClient) -> None:

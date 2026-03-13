@@ -3,7 +3,9 @@ Sona Session Service — FastAPI application entry point.
 
 Endpoints:
     GET  /health                          → HealthResponse
+    GET  /sessions                        → list[Session]
     POST /sessions                        → Session (201 Created)
+    PATCH /sessions/{session_id}          → Session (renamed)
     GET  /sessions/{session_id}           → Session (404 if missing)
     POST /sessions/{session_id}/turns     → Session (appended turn)
     POST /sessions/{session_id}/snapshot  → SnapshotUploadResponse
@@ -33,6 +35,8 @@ from models import (
     HealthResponse,
     Session,
     SessionCreate,
+    SessionElement,
+    SessionRename,
     SnapshotUploadResponse,
 )
 
@@ -133,6 +137,35 @@ async def health_check() -> HealthResponse:
 
 # ─── Session CRUD ─────────────────────────────────────────────────────────────
 
+@app.get("/sessions", response_model=list[Session], tags=["sessions"])
+async def list_sessions(request: Request, student_id: str | None = None) -> list[Session]:
+    """
+    List sessions for one student.
+
+    - When auth is enabled, student_id is derived from the bearer token.
+    - When auth is disabled, caller must provide `student_id` query parameter.
+    """
+    auth_context = _request_auth_context(request)
+    effective_student_id = (
+        auth_context.student_id
+        if auth_context is not None
+        else (student_id.strip() if isinstance(student_id, str) else None)
+    )
+    if not effective_student_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="student_id is required when session auth is disabled",
+        )
+    try:
+        return await fs.list_sessions_for_student(effective_student_id)
+    except Exception as exc:
+        logger.exception("Failed to list sessions for student %s", effective_student_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list sessions",
+        ) from exc
+
+
 @app.post(
     "/sessions",
     response_model=Session,
@@ -142,11 +175,16 @@ async def health_check() -> HealthResponse:
 async def create_session(payload: SessionCreate, request: Request) -> Session:
     """Create a new Session document in Firestore."""
     auth_context = _request_auth_context(request)
-    effective_student_id = (
-        auth_context.student_id
-        if auth_context is not None
-        else payload.student_id
-    )
+    if auth_context is not None:
+        effective_student_id = auth_context.student_id
+    else:
+        raw_student_id = payload.student_id.strip() if isinstance(payload.student_id, str) else ""
+        if not raw_student_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="student_id is required when session auth is disabled",
+            )
+        effective_student_id = raw_student_id
     create_payload = payload.model_copy(update={"student_id": effective_student_id})
 
     try:
@@ -166,10 +204,48 @@ async def create_session(payload: SessionCreate, request: Request) -> Session:
     return session
 
 
+@app.patch("/sessions/{session_id}", response_model=Session, tags=["sessions"])
+async def rename_session(
+    session_id: str,
+    payload: SessionRename,
+    request: Request,
+) -> Session:
+    """Rename one session by updating its topic field."""
+    await _get_session_or_404(session_id, request=request)
+    cleaned_topic = payload.topic.strip()
+    if not cleaned_topic:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Session name cannot be empty",
+        )
+    try:
+        return await fs.update_session_topic(session_id, topic=cleaned_topic)
+    except Exception as exc:
+        logger.exception("Failed to rename session %s", session_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to rename session",
+        ) from exc
+
+
 @app.get("/sessions/{session_id}", response_model=Session, tags=["sessions"])
 async def get_session(session_id: str, request: Request) -> Session:
     """Fetch a session document. Returns 404 if not found."""
     return await _get_session_or_404(session_id, request=request)
+
+
+@app.get("/sessions/{session_id}/elements", response_model=list[SessionElement], tags=["sessions"])
+async def get_session_elements(session_id: str, request: Request) -> list[SessionElement]:
+    """List materialized element documents for a session."""
+    await _get_session_or_404(session_id, request=request)
+    try:
+        return await fs.list_session_elements(session_id)
+    except Exception as exc:
+        logger.exception("Failed to list elements for session %s", session_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list session elements",
+        ) from exc
 
 
 @app.post(
