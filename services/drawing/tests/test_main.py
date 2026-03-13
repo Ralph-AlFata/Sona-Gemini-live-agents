@@ -84,6 +84,18 @@ def test_draw_create_and_edit_flow() -> None:
         assert style.status_code == 200
         assert style.json()["applied_count"] == 1
 
+        labels = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_d",
+                "session_id": "s1",
+                "operation": "set_shape_labels",
+                "payload": {"element_id": element_id, "labels": ["a", "b", "c"]},
+            },
+        )
+        assert labels.status_code == 200
+        assert len(labels.json()["created_element_ids"]) == 3
+
 
 def test_draw_clear_returns_200() -> None:
     with TestClient(main.app) as client:

@@ -152,6 +152,74 @@ async def test_update_points_replaces_existing_shape_points() -> None:
     assert transformed == replacement_points
 
 
+async def test_set_shape_labels_creates_text_elements_and_tracks_them() -> None:
+    store = InMemoryElementStore()
+    create = DrawCommandRequest(
+        command_id="cmd_shape_labels_create",
+        session_id="s1",
+        operation="draw_shape",
+        payload={"shape": "right_triangle", "points": RECT_POINTS[:4], "style": {}},
+    )
+    _, create_resp = await apply_command(create, store)
+    element_id = create_resp.created_element_ids[0]
+
+    label = DrawCommandRequest(
+        command_id="cmd_shape_labels_set",
+        session_id="s1",
+        operation="set_shape_labels",
+        payload={"element_id": element_id, "labels": ["a", "b", "c"], "font_size": 22},
+    )
+    messages, response = await apply_command(label, store)
+
+    assert response.applied_count == 3
+    assert len(response.created_element_ids) == 3
+    assert all(message.type == "element_created" for message in messages)
+    elements = await store.get_all_elements("s1")
+    shape = elements[element_id]
+    assert len(shape.payload["side_labels"]) == 3
+
+
+async def test_moving_shape_repositions_attached_labels() -> None:
+    store = InMemoryElementStore()
+    create = DrawCommandRequest(
+        command_id="cmd_shape_move_create",
+        session_id="s1",
+        operation="draw_shape",
+        payload={"shape": "triangle", "points": RECT_POINTS[:4], "style": {}},
+    )
+    _, create_resp = await apply_command(create, store)
+    element_id = create_resp.created_element_ids[0]
+    await apply_command(
+        DrawCommandRequest(
+            command_id="cmd_shape_move_labels",
+            session_id="s1",
+            operation="set_shape_labels",
+            payload={"element_id": element_id, "labels": ["a", "", "c"], "font_size": 22},
+        ),
+        store,
+    )
+
+    elements_before = await store.get_all_elements("s1")
+    side_labels = elements_before[element_id].payload["side_labels"]
+    label_id = side_labels[0]["element_id"]
+    x_before = elements_before[label_id].payload["x"]
+
+    messages, response = await apply_command(
+        DrawCommandRequest(
+            command_id="cmd_shape_move",
+            session_id="s1",
+            operation="move_elements",
+            payload={"element_ids": [element_id], "dx": 0.1, "dy": 0.0},
+        ),
+        store,
+    )
+
+    assert response.applied_count == 1
+    assert {message.type for message in messages} == {"elements_transformed"}
+    elements_after = await store.get_all_elements("s1")
+    assert elements_after[label_id].payload["x"] > x_before
+
+
 async def test_update_points_appends_to_freehand_points() -> None:
     store = InMemoryElementStore()
     create = DrawCommandRequest(

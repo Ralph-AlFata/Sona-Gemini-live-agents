@@ -22,6 +22,7 @@ from agent.tools.editing import (
     erase_region as _erase_region,
     move_elements as _move_elements,
     resize_elements as _resize_elements,
+    set_shape_labels as _set_shape_labels,
     update_element_points as _update_element_points,
     update_element_style as _update_element_style,
 )
@@ -41,6 +42,7 @@ async def draw(
     # shape-specific
     shape: str | None = None,
     points: list[dict[str, float]] | None = None,
+    labels: list[str] | None = None,
     # text-specific
     text: str | None = None,
     x: float | None = None,
@@ -61,6 +63,8 @@ async def draw(
     action must be one of:
       "shape"    — draw a geometric shape.  Requires `shape` (e.g. "rectangle",
                    "triangle", "circle") and `points` (list of {x, y}).
+                   Optional `labels` maps by index to the shape's sides, so
+                   the system places side labels automatically.
       "text"     — place a text label.  Requires `text`, `x`, `y`.
       "freehand" — draw a freehand stroke.  Requires `points`.
 
@@ -77,6 +81,7 @@ async def draw(
         return await _draw_shape(
             shape=shape,
             points=points,
+            labels=labels,
             stroke_color=stroke_color,
             stroke_width=stroke_width,
             fill_color=fill_color,
@@ -146,6 +151,8 @@ async def edit_canvas(
     # update_points
     points: list[dict[str, float]] | None = None,
     mode: str = "replace",
+    labels: list[str] | None = None,
+    font_size: int = 22,
     # update_style
     stroke_color: str | None = None,
     stroke_width: float | None = None,
@@ -167,6 +174,9 @@ async def edit_canvas(
       "update_points" — replace or append points on an element.  Requires
                          `element_id`, `points`.  Optional `mode`
                          ("replace" or "append").
+      "set_shape_labels" — attach or replace side labels on an existing shape.
+                         Requires `element_id`, `labels`. Use empty strings to
+                         skip sides you do not want labeled.
       "update_style"  — change visual style.  Requires `element_ids` and at
                          least one style field (stroke_color, stroke_width,
                          fill_color, opacity, z_index, delay_ms).
@@ -204,6 +214,16 @@ async def edit_canvas(
             element_id=element_id, points=points, mode=mode, tool_context=tool_context,
         )
 
+    if action == "set_shape_labels":
+        if not element_id or labels is None:
+            raise ValueError("action='set_shape_labels' requires 'element_id' and 'labels'")
+        return await _set_shape_labels(
+            element_id=element_id,
+            labels=labels,
+            font_size=font_size,
+            tool_context=tool_context,
+        )
+
     if action == "update_style":
         if not element_ids:
             raise ValueError("action='update_style' requires 'element_ids'")
@@ -223,7 +243,8 @@ async def edit_canvas(
 
     raise ValueError(
         f"edit_canvas: unknown action '{action}'. "
-        "Must be 'delete', 'erase', 'move', 'resize', 'update_points', 'update_style', or 'clear'."
+        "Must be 'delete', 'erase', 'move', 'resize', 'update_points', "
+        "'set_shape_labels', 'update_style', or 'clear'."
     )
 
 

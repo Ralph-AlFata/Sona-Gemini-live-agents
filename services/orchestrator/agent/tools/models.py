@@ -47,7 +47,23 @@ class DrawShapeInput(_StrictModel):
         "square",
     ]
     points: list[PointInput] = Field(min_length=2)
+    labels: list[str] = Field(default_factory=list, max_length=64)
     style: ToolStyle = Field(default_factory=ToolStyle)
+
+    @model_validator(mode="after")
+    def _validate_labels(self) -> "DrawShapeInput":
+        if not self.labels:
+            return self
+
+        edge_count = len(self.points) - 1
+        if self.shape in {"circle", "ellipse"}:
+            raise ValueError(f"labels are not supported for shape '{self.shape}'")
+        if edge_count < 1:
+            raise ValueError("labels require at least one side")
+        if len(self.labels) > edge_count:
+            raise ValueError(f"labels can have at most {edge_count} entries for this shape")
+
+        return self
 
 
 class DrawTextInput(_StrictModel):
@@ -141,6 +157,12 @@ class UpdateStyleInput(_StrictModel):
         ):
             raise ValueError("at least one style update field is required")
         return self
+
+
+class SetShapeLabelsInput(_StrictModel):
+    element_id: str = Field(min_length=1, max_length=128)
+    labels: list[str] = Field(default_factory=list, max_length=64)
+    font_size: int = Field(default=22, ge=8, le=256)
 
 
 class ToolResult(_StrictModel):

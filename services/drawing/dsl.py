@@ -23,6 +23,7 @@ from models import (
     HighlightPayload,
     MoveElementsPayload,
     ResizeElementsPayload,
+    SetShapeLabelsPayload,
     StylePayload,
     UpdatePointsPayload,
     UpdateStylePayload,
@@ -102,6 +103,12 @@ def _build_text_element(payload: DrawTextPayload) -> tuple[dict, BBox]:
     }
     return draw_payload, BBox(payload.x, payload.y, approx_width, approx_height)
 
+
+def _estimate_text_bbox(x: float, y: float, text: str, font_size: int) -> BBox:
+    approx_width = min(0.8, 0.012 * len(text) * (font_size / 24))
+    approx_height = min(0.25, 0.03 * (font_size / 24))
+    return BBox(x, y, approx_width, approx_height)
+
 # TODO: Check why when we ask it to draw an S-shaped line, it gives us this weird thing
 def _build_freehand_element(payload: DrawFreehandPayload) -> tuple[dict, BBox]:
     xs = [point.x for point in payload.points]
@@ -137,6 +144,158 @@ def _create_message(command: DrawCommandRequest, message_type: str, payload: dic
         type=message_type,
         payload=payload,
     )
+
+
+def _shape_vertices(points: list[dict[str, float]]) -> list[dict[str, float]]:
+    if len(points) > 2 and points[0] == points[-1]:
+        return points[:-1]
+    return points
+
+
+def _shape_centroid(points: list[dict[str, float]]) -> tuple[float, float]:
+    vertices = _shape_vertices(points)
+    count = max(len(vertices), 1)
+    return (
+        sum(point["x"] for point in vertices) / count,
+        sum(point["y"] for point in vertices) / count,
+    )
+
+
+def _line_label_anchor(p1: dict[str, float], p2: dict[str, float], offset: float = 0.025) -> tuple[float, float]:
+    dx = p2["x"] - p1["x"]
+    dy = p2["y"] - p1["y"]
+    length = math.hypot(dx, dy)
+    if length <= 1e-6:
+        raise ValueError("cannot place a label on a zero-length side")
+
+    nx = -dy / length
+    ny = dx / length
+    if abs(dx) >= abs(dy):
+        if ny > 0:
+            nx = -nx
+            ny = -ny
+    elif nx > 0:
+        nx = -nx
+        ny = -ny
+
+    mid_x = (p1["x"] + p2["x"]) / 2
+    mid_y = (p1["y"] + p2["y"]) / 2
+    return mid_x + (nx * offset), mid_y + (ny * offset)
+
+
+def _side_label_anchor(
+    points: list[dict[str, float]],
+    side_index: int,
+    offset: float = 0.025,
+) -> tuple[float, float]:
+    p1 = points[side_index]
+    p2 = points[side_index + 1]
+    dx = p2["x"] - p1["x"]
+    dy = p2["y"] - p1["y"]
+    length = math.hypot(dx, dy)
+    if length <= 1e-6:
+        raise ValueError(f"cannot place a label on zero-length side {side_index}")
+
+    mid_x = (p1["x"] + p2["x"]) / 2
+    mid_y = (p1["y"] + p2["y"]) / 2
+    if len(points) == 2:
+        return _line_label_anchor(p1, p2, offset)
+
+    centroid_x, centroid_y = _shape_centroid(points)
+    normal_a = (-dy / length, dx / length)
+    normal_b = (dy / length, -dx / length)
+    away_a = ((mid_x + normal_a[0]) - centroid_x) ** 2 + ((mid_y + normal_a[1]) - centroid_y) ** 2
+    away_b = ((mid_x + normal_b[0]) - centroid_x) ** 2 + ((mid_y + normal_b[1]) - centroid_y) ** 2
+    nx, ny = normal_a if away_a >= away_b else normal_b
+    return mid_x + (nx * offset), mid_y + (ny * offset)
+
+
+def _label_text_origin(
+    points: list[dict[str, float]],
+    side_index: int,
+    text: str,
+    font_size: int,
+) -> tuple[float, float]:
+    anchor_x, anchor_y = _side_label_anchor(points, side_index)
+    bbox = _estimate_text_bbox(0.0, 0.0, text, font_size)
+    return (
+        _clamp(anchor_x - (bbox.width / 2), max(0.0, 1.0 - bbox.width)),
+        _clamp(anchor_y - (bbox.height / 2), max(0.0, _Y_MAX - bbox.height)),
+    )
+
+
+def _build_shape_label_payload(
+    shape_element: StoredElement,
+    side_index: int,
+    text: str,
+    font_size: int,
+) -> tuple[dict, BBox]:
+    points = shape_element.payload.get("points", [])
+    x, y = _label_text_origin(points, side_index, text, font_size)
+    shape_style = shape_element.payload.get("style", {})
+    draw_payload = {
+        "text": text,
+        "x": x,
+        "y": y,
+        "font_size": font_size,
+        "style": {
+            "stroke_color": shape_style.get("stroke_color", "#111111"),
+            "stroke_width": max(1.0, min(float(shape_style.get("stroke_width", 2.0)), 2.0)),
+            "fill_color": None,
+            "opacity": shape_style.get("opacity", 1.0),
+            "z_index": int(shape_style.get("z_index", 0)) + 1,
+            "delay_ms": int(shape_style.get("delay_ms", 30)),
+            "animate": bool(shape_style.get("animate", True)),
+        },
+        "attached_shape_id": shape_element.element_id,
+        "side_index": side_index,
+        "label_kind": "shape_side",
+    }
+    return draw_payload, _estimate_text_bbox(x, y, text, font_size)
+
+
+def _label_entries(shape_element: StoredElement) -> list[dict]:
+    entries = shape_element.payload.get("side_labels", [])
+    return entries if isinstance(entries, list) else []
+
+
+async def _sync_shape_label_positions(
+    command: DrawCommandRequest,
+    store: ElementStore,
+    session_elements: dict[str, StoredElement],
+    shape_element: StoredElement,
+) -> list[DSLMessage]:
+    transformed: list[dict] = []
+    for entry in _label_entries(shape_element):
+        if not isinstance(entry, dict):
+            continue
+        label_id = entry.get("element_id")
+        text = entry.get("text")
+        side_index = entry.get("side_index")
+        font_size = entry.get("font_size", 22)
+        if not isinstance(label_id, str) or not isinstance(text, str) or not isinstance(side_index, int):
+            continue
+        label_element = session_elements.get(label_id)
+        if label_element is None:
+            continue
+        draw_payload, bbox = _build_shape_label_payload(shape_element, side_index, text, int(font_size))
+        label_element.payload = draw_payload
+        label_element.bbox = bbox
+        await store.put_element(command.session_id, label_element)
+        transformed.append(
+            {
+                "element_id": label_element.element_id,
+                "element_type": "text",
+                "payload": {
+                    "text": draw_payload["text"],
+                    "x": draw_payload["x"],
+                    "y": draw_payload["y"],
+                    "font_size": draw_payload["font_size"],
+                    **_translate_style_for_frontend(draw_payload["style"]),
+                },
+            }
+        )
+    return [_create_message(command, "elements_transformed", {"elements": transformed})] if transformed else []
 
 
 def _move_bbox(bbox: BBox, dx: float, dy: float) -> BBox:
@@ -252,12 +411,24 @@ def _delete_elements_from_snapshot(
     """
     deleted: list[str] = []
     failures: list[DrawCommandFailure] = []
-    for eid in element_ids:
-        if eid in session_elements:
-            session_elements.pop(eid)
-            deleted.append(eid)
-        else:
+    pending = list(dict.fromkeys(element_ids))
+    visited: set[str] = set()
+    while pending:
+        eid = pending.pop(0)
+        if eid in visited:
+            continue
+        visited.add(eid)
+        element = session_elements.get(eid)
+        if element is None:
             failures.append(DrawCommandFailure(element_id=eid, reason="element not found"))
+            continue
+        if element.element_type == "shape":
+            for entry in _label_entries(element):
+                label_id = entry.get("element_id") if isinstance(entry, dict) else None
+                if isinstance(label_id, str):
+                    pending.append(label_id)
+        session_elements.pop(eid, None)
+        deleted.append(eid)
     return deleted, failures
 
 
@@ -324,6 +495,7 @@ async def apply_command(
     elif isinstance(payload, DrawShapePayload):
         element_id = command.element_id or _next_element_id()
         draw_payload, bbox = _build_shape_element(payload)
+        draw_payload["side_labels"] = []
         element = StoredElement(
             element_id=element_id,
             element_type="shape",
@@ -598,6 +770,101 @@ async def apply_command(
         if deleted:
             messages.append(_create_message(command, "elements_deleted", {"element_ids": deleted}))
 
+    elif isinstance(payload, SetShapeLabelsPayload):
+        shape_element = session_elements.get(payload.element_id)
+        if shape_element is None:
+            failures.append(DrawCommandFailure(element_id=payload.element_id, reason="element not found"))
+        elif shape_element.element_type != "shape":
+            failures.append(
+                DrawCommandFailure(element_id=payload.element_id, reason="element is not a shape")
+            )
+        else:
+            shape_kind = str(shape_element.payload.get("shape", ""))
+            points = shape_element.payload.get("points", [])
+            edge_count = len(points) - 1
+            if shape_kind in {"circle", "ellipse"} and payload.labels:
+                failures.append(
+                    DrawCommandFailure(
+                        element_id=payload.element_id,
+                        reason=f"labels are not supported for shape '{shape_kind}'",
+                    )
+                )
+            elif edge_count < 1:
+                failures.append(
+                    DrawCommandFailure(element_id=payload.element_id, reason="shape has no labelable sides")
+                )
+            elif len(payload.labels) > edge_count:
+                failures.append(
+                    DrawCommandFailure(
+                        element_id=payload.element_id,
+                        reason=f"labels can have at most {edge_count} entries for this shape",
+                    )
+                )
+            else:
+                prior_label_ids = [
+                    entry["element_id"]
+                    for entry in _label_entries(shape_element)
+                    if isinstance(entry, dict) and isinstance(entry.get("element_id"), str)
+                ]
+                deleted_ids = [label_id for label_id in prior_label_ids if label_id in session_elements]
+                for label_id in deleted_ids:
+                    session_elements.pop(label_id, None)
+                    await store.delete_element(command.session_id, label_id)
+                if deleted_ids:
+                    messages.append(
+                        _create_message(command, "elements_deleted", {"element_ids": deleted_ids})
+                    )
+
+                new_entries: list[dict] = []
+                for side_index, label_text in enumerate(payload.labels):
+                    if not label_text.strip():
+                        continue
+                    label_id = _next_element_id()
+                    draw_payload, bbox = _build_shape_label_payload(
+                        shape_element,
+                        side_index,
+                        label_text,
+                        payload.font_size,
+                    )
+                    label_element = StoredElement(
+                        element_id=label_id,
+                        element_type="text",
+                        payload=draw_payload,
+                        bbox=bbox,
+                    )
+                    session_elements[label_id] = label_element
+                    await store.put_element(command.session_id, label_element)
+                    created_element_ids.append(label_id)
+                    new_entries.append(
+                        {
+                            "side_index": side_index,
+                            "text": label_text,
+                            "element_id": label_id,
+                            "font_size": payload.font_size,
+                        }
+                    )
+                    messages.append(
+                        _create_message(
+                            command,
+                            "element_created",
+                            {
+                                "element_id": label_id,
+                                "element_type": "text",
+                                "payload": {
+                                    "text": draw_payload["text"],
+                                    "x": draw_payload["x"],
+                                    "y": draw_payload["y"],
+                                    "font_size": draw_payload["font_size"],
+                                    **_translate_style_for_frontend(draw_payload["style"]),
+                                },
+                            },
+                        )
+                    )
+
+                shape_element.payload["side_labels"] = new_entries
+                await store.put_element(command.session_id, shape_element)
+                applied_count = len(deleted_ids) + len(created_element_ids)
+
     elif isinstance(payload, EraseRegionPayload):
         target = BBox(payload.x, payload.y, payload.width, payload.height)
         ids_to_erase = [
@@ -625,6 +892,10 @@ async def apply_command(
                 "payload": element.payload,
             })
             applied_count += 1
+            if element.element_type == "shape":
+                messages.extend(
+                    await _sync_shape_label_positions(command, store, session_elements, element)
+                )
         if transformed:
             messages.append(_create_message(command, "elements_transformed", {"elements": transformed}))
 
@@ -643,6 +914,10 @@ async def apply_command(
                 "payload": element.payload,
             })
             applied_count += 1
+            if element.element_type == "shape":
+                messages.extend(
+                    await _sync_shape_label_positions(command, store, session_elements, element)
+                )
         if transformed:
             messages.append(_create_message(command, "elements_transformed", {"elements": transformed}))
 
@@ -682,6 +957,10 @@ async def apply_command(
                 element.bbox = _bbox_from_points(next_points)
                 await store.put_element(command.session_id, element)
                 applied_count = 1
+                if element.element_type == "shape":
+                    messages.extend(
+                        await _sync_shape_label_positions(command, store, session_elements, element)
+                    )
                 messages.append(
                     _create_message(
                         command,
