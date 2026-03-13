@@ -492,6 +492,7 @@ async def create_session(payload: SessionCreate) -> Session:
     """Create a new session summary document in Firestore."""
     client = get_firestore_client()
     session_id = payload.session_id or uuid4().hex
+    student_id = payload.student_id or f"student_{uuid4().hex[:8]}"
     doc_ref = _session_doc_ref(client, session_id)
     existing = await doc_ref.get()
     if existing.exists:
@@ -499,11 +500,15 @@ async def create_session(payload: SessionCreate) -> Session:
         existing_session = await get_session(session_id)
         if existing_session is None:
             raise ValueError(f"Session {session_id!r} exists but could not be loaded")
+        if existing_session.student_id != student_id:
+            raise PermissionError(
+                f"Session {session_id!r} is owned by a different student_id"
+            )
         return existing_session
 
     session = Session(
         session_id=session_id,
-        student_id=payload.student_id,
+        student_id=student_id,
         topic=payload.topic,
         turn_count=0,
         last_turn_at=None,
