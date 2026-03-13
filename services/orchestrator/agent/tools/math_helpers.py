@@ -10,6 +10,10 @@ from sympy import Symbol, lambdify, sympify
 from agent.tools._shared import execute_tool_command, resolve_session_id
 from agent.tools.core import shape_to_points
 
+_DEFAULT_PLOT_COLOR = "#e74c3c"
+_DEFAULT_PLOT_LABEL_FONT_SIZE = 14
+_DEFAULT_PLOT_LABEL_OFFSET = 0.025
+
 
 async def draw_axes_grid(
     x: float = 0.1,
@@ -137,6 +141,70 @@ async def draw_number_line(
     }
 
 
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def _estimate_text_size(text: str, font_size: int) -> tuple[float, float]:
+    width = min(0.8, 0.012 * len(text) * (font_size / 24))
+    height = min(0.25, 0.03 * (font_size / 24))
+    return width, height
+
+
+def _format_equation_label(expression: str) -> str:
+    label = expression.strip().replace("*", "")
+    if not label:
+        return "y = 0"
+    if not label.lower().startswith("y"):
+        label = f"y = {label}"
+    label = label.replace("+", " + ").replace("-", " - ")
+    return " ".join(label.split())
+
+
+def _compute_plot_label_position(
+    points: list[dict[str, float]],
+    *,
+    graph_y: float,
+    graph_height: float,
+    graph_x: float,
+    graph_width: float,
+    label_text: str,
+    font_size: int,
+    placed_positions: list[tuple[float, float]],
+) -> tuple[float, float]:
+    anchor_index = min(len(points) - 1, max(0, int(len(points) * 0.85)))
+    anchor = points[anchor_index]
+    p_before = points[max(0, anchor_index - 1)]
+    p_after = points[min(len(points) - 1, anchor_index + 1)]
+    dx = p_after["x"] - p_before["x"]
+    dy = p_after["y"] - p_before["y"]
+    length = math.hypot(dx, dy)
+    if length > 1e-6:
+        nx = -dy / length
+        ny = dx / length
+    else:
+        nx, ny = 0.0, -1.0
+
+    graph_center_y = graph_y + (graph_height / 2)
+    if anchor["y"] < graph_center_y:
+        if ny > 0:
+            nx, ny = -nx, -ny
+    elif ny < 0:
+        nx, ny = -nx, -ny
+
+    label_x = anchor["x"] + (nx * _DEFAULT_PLOT_LABEL_OFFSET)
+    label_y = anchor["y"] + (ny * _DEFAULT_PLOT_LABEL_OFFSET)
+
+    for prev_x, prev_y in placed_positions:
+        if abs(label_x - prev_x) < 0.1 and abs(label_y - prev_y) < 0.03:
+            label_y = prev_y + 0.035
+
+    text_width, text_height = _estimate_text_size(label_text, font_size)
+    label_x = _clamp(label_x - (text_width / 2), graph_x, max(graph_x, graph_x + graph_width - text_width))
+    label_y = _clamp(label_y - (text_height / 2), graph_y, max(graph_y, graph_y + graph_height - text_height))
+    return label_x, label_y
+
+
 async def plot_function_2d(
     expression: str,
     x: float = 0.1,
@@ -148,12 +216,15 @@ async def plot_function_2d(
     y_min: float = -10.0,
     y_max: float = 10.0,
     samples: int = 200,
+    stroke_color: str = _DEFAULT_PLOT_COLOR,
+    stroke_width: float = 2.5,
     tool_context: ToolContext | None = None,
 ) -> dict:
     """Plot a mathematical function on the graph viewport.
 
     Invocation condition: Call ONCE per function expression. Do not replot
-    the same expression that already has a confirmed element ID.
+    the same expression that already has a confirmed element ID. The plotted
+    function is automatically labeled with its equation near the visible line.
     """
     if domain_max <= domain_min:
         raise ValueError("domain_max must be greater than domain_min")
@@ -196,14 +267,44 @@ async def plot_function_2d(
             "failed_operations": [{"element_id": None, "reason": "no plottable points in range"}],
         }
 
+    session_id = resolve_session_id(tool_context)
     result = await execute_tool_command(
-        session_id=resolve_session_id(tool_context),
+        session_id=session_id,
         operation="draw_freehand",
         payload={
             "points": points,
             "style": {
-                "stroke_color": "#2563eb",
-                "stroke_width": 2.5,
+                "stroke_color": stroke_color,
+                "stroke_width": stroke_width,
+                "opacity": 1.0,
+                "delay_ms": 10,
+                "animate": True,
+            },
+        },
+    )
+
+    label_text = _format_equation_label(expression)
+    label_x, label_y = _compute_plot_label_position(
+        points,
+        graph_y=y,
+        graph_height=height,
+        graph_x=x,
+        graph_width=width,
+        label_text=label_text,
+        font_size=_DEFAULT_PLOT_LABEL_FONT_SIZE,
+        placed_positions=[],
+    )
+    label_result = await execute_tool_command(
+        session_id=session_id,
+        operation="draw_text",
+        payload={
+            "text": label_text,
+            "x": label_x,
+            "y": label_y,
+            "font_size": _DEFAULT_PLOT_LABEL_FONT_SIZE,
+            "style": {
+                "stroke_color": stroke_color,
+                "stroke_width": 1.0,
                 "opacity": 1.0,
                 "delay_ms": 10,
                 "animate": True,
@@ -215,7 +316,10 @@ async def plot_function_2d(
         "status": "success",
         "operation": "plot_function_2d",
         "command_id": result.command_id,
-        "applied_count": result.applied_count,
-        "created_element_ids": result.created_element_ids,
-        "failed_operations": result.failed_operations,
+        "applied_count": result.applied_count + label_result.applied_count,
+        "created_element_ids": result.created_element_ids + label_result.created_element_ids,
+        "failed_operations": result.failed_operations + label_result.failed_operations,
+        "line_element_ids": result.created_element_ids,
+        "label_element_ids": label_result.created_element_ids,
+        "plot_summary": f"Plotted {label_text} in {stroke_color}.",
     }
