@@ -272,6 +272,8 @@ async def graph(
     # plot_function specific
     expression: str | None = None,
     samples: int = 200,
+    stroke_color: str = "#e74c3c",
+    stroke_width: float = 2.5,
     tool_context: ToolContext | None = None,
 ) -> dict:
     """Create mathematical graphs and plots on the canvas.
@@ -281,7 +283,9 @@ async def graph(
       "number_line"   — draw a number line with ticks and labels.
                          Requires `x`, `y`, `width`.
       "plot_function" — plot a mathematical expression (e.g. "2*x + 1").
-                         Requires `expression`.
+                         Requires `expression`. Optional `stroke_color`
+                         controls the plotted line color. The equation label
+                         is placed automatically near the visible line.
 
     Use matching x/y/width/height/domain_min/domain_max/y_min/y_max between
     axes_grid and plot_function so curves align with the grid.
@@ -315,6 +319,8 @@ async def graph(
             domain_min=domain_min, domain_max=domain_max,
             y_min=y_min, y_max=y_max,
             samples=samples,
+            stroke_color=stroke_color,
+            stroke_width=stroke_width,
             tool_context=tool_context,
         )
 

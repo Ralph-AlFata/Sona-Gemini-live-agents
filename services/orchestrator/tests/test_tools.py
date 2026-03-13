@@ -179,6 +179,51 @@ async def test_plot_function_no_points_returns_error(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_plot_function_uses_requested_stroke_color_and_adds_label(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await math_helpers.plot_function_2d(
+        expression="2*x+1",
+        domain_min=-2,
+        domain_max=2,
+        y_min=-5,
+        y_max=5,
+        stroke_color="#ff0000",
+    )
+
+    assert result["status"] == "success"
+    assert result["line_element_ids"]
+    assert result["label_element_ids"]
+    assert "y = 2x + 1" in result["plot_summary"]
+
+    assert [call["operation"] for call in _fake_client.calls] == ["draw_freehand", "draw_text"]
+    assert _fake_client.calls[0]["payload"]["style"]["stroke_color"] == "#ff0000"
+    assert _fake_client.calls[1]["payload"]["style"]["stroke_color"] == "#ff0000"
+    assert _fake_client.calls[1]["payload"]["text"] == "y = 2x + 1"
+
+
+@pytest.mark.asyncio
+async def test_plot_function_uses_default_color_when_none_specified(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
+
+    await math_helpers.plot_function_2d(
+        expression="x",
+        domain_min=-2,
+        domain_max=2,
+        y_min=-5,
+        y_max=5,
+    )
+
+    assert _fake_client.calls[0]["payload"]["style"]["stroke_color"] == "#e74c3c"
+
+
+@pytest.mark.asyncio
 async def test_draw_axes_grid_uses_viewport_command(monkeypatch: pytest.MonkeyPatch, _fake_client: _FakeClient) -> None:
     monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
 
