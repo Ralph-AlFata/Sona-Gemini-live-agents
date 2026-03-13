@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ROOT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
@@ -23,9 +26,11 @@ class Settings(BaseSettings):
     drawing_service_url: str = "http://drawing:8002"
     dedup_window_seconds: float = 2.0
     dedup_max_entries: int = 200
+    orchestrator_auth_enabled: bool = False
+    orchestrator_auth_audience: str = ""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(str(_ROOT_ENV_FILE), ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",

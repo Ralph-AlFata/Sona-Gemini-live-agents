@@ -14,7 +14,9 @@ class _FakeClient:
         operation: str,
         payload: dict,
         command_id: str | None = None,
+        auth_token: str | None = None,
     ) -> DrawingCommandResult:
+        _ = auth_token
         return DrawingCommandResult(
             session_id=session_id,
             command_id=command_id or "cmd_fallback",

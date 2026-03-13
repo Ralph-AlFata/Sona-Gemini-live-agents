@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from google.adk.tools import ToolContext
 
+from agent.tools._auth import get_current_auth_token
 from agent.tools._dedup import ToolCallDeduplicator
 from agent.tools._trace import emit_draw_trace
 from config import settings
@@ -99,6 +100,7 @@ async def execute_tool_command(
         operation=operation,
         payload=payload,
         command_id=uuid4().hex[:12],
+        auth_token=get_current_auth_token(),
     )
 
     emit_draw_trace(
