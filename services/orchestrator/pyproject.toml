@@ -12,6 +12,7 @@ dependencies = [
     "google-genai",
     "python-dotenv>=1.0.1",
     "httpx>=0.28.0",
+    "google-auth>=2.48.0",
     "sympy>=1.14.0",
     "websockets>=15.0",
 ]

@@ -13,6 +13,7 @@ async def test_execute_posts_command_payload() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         captured["path"] = request.url.path
         captured["body"] = request.read().decode()
+        captured["auth"] = request.headers.get("authorization", "")
         return httpx.Response(
             status_code=202,
             json={
@@ -35,10 +36,12 @@ async def test_execute_posts_command_payload() -> None:
         operation="draw_text",
         payload={"text": "hello", "x": 0.1, "y": 0.1, "font_size": 18, "style": {}},
         command_id="cmd_1",
+        auth_token="token-abc",
     )
 
     assert captured["path"] == "/draw"
     assert "\"operation\":\"draw_text\"" in captured["body"]
+    assert captured["auth"] == "Bearer token-abc"
     assert result.created_element_ids == ["el_1"]
 
     await client.close()

@@ -24,7 +24,9 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from agent.tools._trace import draw_trace_span
+from agent.tools._auth import auth_token_span
 from agent import root_agent
+from auth import AuthError, FirebaseTokenVerifier
 from config import settings
 from session_client import SessionServiceClient
 
@@ -222,14 +224,24 @@ async def _ensure_adk_session(runtime: LiveRuntime, user_id: str, session_id: st
     )
 
 
-async def _ensure_persisted_session(runtime: LiveRuntime, user_id: str, session_id: str) -> None:
+async def _ensure_persisted_session(
+    runtime: LiveRuntime,
+    user_id: str,
+    session_id: str,
+    *,
+    auth_token: str | None = None,
+) -> None:
     """Ensure the Firestore-backed session document exists in the session service."""
-    existing = await runtime.session_client.get_session(session_id)
+    existing = await runtime.session_client.get_session(
+        session_id,
+        auth_token=auth_token,
+    )
     if existing is not None:
         return
     await runtime.session_client.create_session(
         session_id=session_id,
         student_id=user_id,
+        auth_token=auth_token,
     )
 
 
@@ -249,12 +261,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.live_uses_gemini = _configure_gemini_environment()
     live_runtime = build_live_runtime()
     app.state.live_runtime = live_runtime
+    app.state.auth_verifier = (
+        FirebaseTokenVerifier(
+            audience=settings.orchestrator_auth_audience or None,
+        )
+        if settings.orchestrator_auth_enabled
+        else None
+    )
 
     logger.info(
-        "Orchestrator service startup complete on port %s (chat_mode=%s, live_enabled=%s)",
+        "Orchestrator service startup complete on port %s (chat_mode=%s, live_enabled=%s, auth_enabled=%s)",
         os.getenv("PORT", "8001"),
         settings.chat_mode,
         app.state.live_uses_gemini,
+        settings.orchestrator_auth_enabled,
     )
     yield
     session_client = getattr(live_runtime, "session_client", None)
@@ -299,6 +319,7 @@ async def websocket_endpoint(
     session_id: str,
     proactivity: bool = False,
     affective_dialog: bool = False,
+    auth_token: str | None = None,
 ) -> None:
     """WebSocket endpoint for bidirectional streaming with ADK.
 
@@ -310,7 +331,41 @@ async def websocket_endpoint(
         affective_dialog: Enable affective dialog (native audio models only)
     """
     await websocket.accept()
-    logger.info("LIVE_WS_CONNECTED user_id=%s session_id=%s", user_id, session_id)
+    effective_user_id = user_id
+    bearer_token: str | None = None
+
+    if settings.orchestrator_auth_enabled:
+        if not auth_token:
+            await websocket.send_json({"error": "Missing auth_token query parameter."})
+            await websocket.close(code=1008)
+            return
+        verifier: FirebaseTokenVerifier | None = getattr(app.state, "auth_verifier", None)
+        if verifier is None:
+            await websocket.send_json({"error": "Auth verifier not initialized."})
+            await websocket.close(code=1011)
+            return
+        try:
+            auth_context = await verifier.verify(auth_token)
+        except AuthError as exc:
+            await websocket.send_json({"error": str(exc)})
+            await websocket.close(code=1008)
+            return
+        effective_user_id = auth_context.student_id
+        bearer_token = auth_token
+        if user_id != effective_user_id:
+            logger.warning(
+                "LIVE_WS_USER_ID_MISMATCH path_user_id=%s token_user_id=%s session_id=%s",
+                user_id,
+                effective_user_id,
+                session_id,
+            )
+
+    logger.info(
+        "LIVE_WS_CONNECTED user_id=%s session_id=%s auth_enabled=%s",
+        effective_user_id,
+        session_id,
+        settings.orchestrator_auth_enabled,
+    )
 
     if not getattr(app.state, "live_uses_gemini", False):
         await websocket.send_json(
@@ -328,13 +383,18 @@ async def websocket_endpoint(
         return
 
     # TODO: Double check here if the actual runtime is being updated globally, or it's just inside the function and then it's dropping
-    await _ensure_adk_session(runtime, user_id=user_id, session_id=session_id)
+    await _ensure_adk_session(runtime, user_id=effective_user_id, session_id=session_id)
     try:
-        await _ensure_persisted_session(runtime, user_id=user_id, session_id=session_id)
+        await _ensure_persisted_session(
+            runtime,
+            user_id=effective_user_id,
+            session_id=session_id,
+            auth_token=bearer_token,
+        )
     except Exception:
         logger.exception(
             "LIVE_PERSISTED_SESSION_INIT_FAILED user_id=%s session_id=%s",
-            user_id,
+            effective_user_id,
             session_id,
         )
     run_config = _build_live_run_config(
@@ -377,6 +437,7 @@ async def websocket_endpoint(
                     role=role,
                     content=cleaned,
                     metadata=metadata,
+                    auth_token=bearer_token,
                 )
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
@@ -389,14 +450,16 @@ async def websocket_endpoint(
                     try:
                         await _ensure_persisted_session(
                             runtime,
-                            user_id=user_id,
+                            user_id=effective_user_id,
                             session_id=session_id,
+                            auth_token=bearer_token,
                         )
                         await runtime.session_client.append_turn(
                             session_id=session_id,
                             role=role,
                             content=cleaned,
                             metadata=metadata,
+                            auth_token=bearer_token,
                         )
                     except Exception:
                         logger.exception(
@@ -490,9 +553,9 @@ async def websocket_endpoint(
             try:
                 with draw_trace_span(
                     lambda trace_event: _record_draw_trace(active_turn_id, trace_event)
-                ):
+                ), auth_token_span(bearer_token):
                     async for event in runtime.runner.run_live(
-                        user_id=user_id,
+                        user_id=effective_user_id,
                         session_id=session_id,
                         live_request_queue=active_queue,
                         run_config=run_config,
@@ -654,7 +717,7 @@ async def websocket_endpoint(
                 if 'disconnect message has been received' in str(exc):
                     logger.info(
                         "LIVE_WS_RECEIVE_AFTER_DISCONNECT user_id=%s session_id=%s",
-                        user_id,
+                        effective_user_id,
                         session_id,
                     )
                     return
@@ -748,11 +811,15 @@ async def websocket_endpoint(
     try:
         await upstream_task()
     except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected user_id=%s session_id=%s", user_id, session_id)
+        logger.info(
+            "WebSocket client disconnected user_id=%s session_id=%s",
+            effective_user_id,
+            session_id,
+        )
     except Exception as exc:
         logger.exception(
             "Live websocket failed user_id=%s session_id=%s: %s",
-            user_id,
+            effective_user_id,
             session_id,
             exc,
         )
