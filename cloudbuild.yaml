@@ -1,0 +1,83 @@
+steps:
+  # ─── 1. Session service ─────────────────────────────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-session
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - sona-session
+      - --source=./services/session
+      - --region=us-central1
+      - --port=8003
+      - --allow-unauthenticated
+      - --service-account=sona-session-sa@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,USE_FIRESTORE=true,FIRESTORE_DATABASE=(default),GCS_BUCKET=sona-canvases-your-suffix,SESSION_AUTH_ENABLED=true
+
+  # ─── 2. Drawing service ─────────────────────────────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-drawing
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        SESSION_URL=$(gcloud run services describe sona-session --region us-central1 --format='value(status.url)')
+        gcloud run deploy sona-drawing \
+          --source=./services/drawing \
+          --region=us-central1 \
+          --port=8002 \
+          --allow-unauthenticated \
+          --timeout=3600 \
+          --service-account=sona-drawing-sa@$PROJECT_ID.iam.gserviceaccount.com \
+          --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,USE_FIRESTORE=true,FIRESTORE_DATABASE=(default),DRAWING_AUTH_ENABLED=true,SESSION_SERVICE_URL=$$SESSION_URL"
+    waitFor: [deploy-session]
+
+  # ─── 3. Orchestrator ────────────────────────────────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-orchestrator
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        SESSION_URL=$(gcloud run services describe sona-session --region us-central1 --format='value(status.url)')
+        DRAWING_URL=$(gcloud run services describe sona-drawing --region us-central1 --format='value(status.url)')
+        gcloud run deploy sona-orchestrator \
+          --source=./services/orchestrator \
+          --region=us-central1 \
+          --port=8001 \
+          --allow-unauthenticated \
+          --timeout=3600 \
+          --service-account=sona-orchestrator-sa@$PROJECT_ID.iam.gserviceaccount.com \
+          --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1,ORCHESTRATOR_AUTH_ENABLED=true,SESSION_SERVICE_URL=$$SESSION_URL,DRAWING_SERVICE_URL=$$DRAWING_URL"
+    waitFor: [deploy-drawing]
+
+  # ─── 4. Frontend ────────────────────────────────────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-frontend
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - sona-frontend
+      - --source=./frontend
+      - --region=us-central1
+      - --port=3000
+      - --allow-unauthenticated
+    waitFor: [deploy-orchestrator]
+
+  # ─── 5. Fix CORS on all backends ────────────────────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: fix-cors
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        FRONTEND_URL=$(gcloud run services describe sona-frontend --region us-central1 --format='value(status.url)')
+        gcloud run services update sona-session     --region us-central1 --update-env-vars "FRONTEND_URL=$$FRONTEND_URL"
+        gcloud run services update sona-drawing     --region us-central1 --update-env-vars "FRONTEND_URL=$$FRONTEND_URL"
+        gcloud run services update sona-orchestrator --region us-central1 --update-env-vars "FRONTEND_URL=$$FRONTEND_URL"
+    waitFor: [deploy-frontend]
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8

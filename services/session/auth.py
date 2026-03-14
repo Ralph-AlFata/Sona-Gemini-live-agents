@@ -118,6 +118,8 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Any) -> Response:
         request.state.auth_context = None
         request.state.session_auth_enabled = self._settings.enabled
+        if request.method == "OPTIONS":
+            return await call_next(request)
         if not request.url.path.startswith("/sessions"):
             return await call_next(request)
         if not self._settings.enabled:
