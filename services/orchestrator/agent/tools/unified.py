@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from google.adk.tools import ToolContext
 
+from agent.tools._cursor_store import get_cursor
+from agent.tools._shared import resolve_session_id
+from agent.tools._trace import emit_draw_trace
 from agent.tools.core import (
     clear_canvas as _clear_canvas,
     draw_freehand as _draw_freehand,
@@ -42,11 +45,14 @@ async def draw(
     # shape-specific
     shape: str | None = None,
     points: list[dict[str, float]] | None = None,
+    width: float | None = None,
+    height: float | None = None,
     labels: list[str] | None = None,
     # text-specific
     text: str | None = None,
     x: float | None = None,
     y: float | None = None,
+    next: str = "below",
     font_size: int = 24,
     # common style
     stroke_color: str = "#111111",
@@ -61,14 +67,19 @@ async def draw(
     """Create a new visual element on the canvas.
 
     action must be one of:
-      "shape"    — draw a geometric shape.  Requires `shape` (e.g. "rectangle",
-                   "triangle", "circle") and `points` (list of {x, y}).
-                   Optional `labels` maps by index to the shape's sides, so
-                   the system places side labels automatically.
+      "shape"    — draw a geometric shape. Requires `shape`. Use either:
+                   - automatic placement: omit `points`, optionally pass
+                     `width`/`height` and `next`
+                   - manual placement: provide `points`.
+                   Optional `labels` maps by index to the shape's sides.
                    Do NOT use this to plot mathematical functions on axes.
-      "text"     — place a text label.  Requires `text`, `x`, `y`.
+      "text"     — place text. Requires `text`. Omit `x` and `y` for automatic
+                   placement, or provide both for manual placement.
       "freehand" — draw a freehand stroke.  Requires `points`.
                    Do NOT use this to plot mathematical functions on axes.
+
+    Optional `next` controls automatic cursor flow:
+    "below" (default), "right", "left", "below_all".
 
     Style parameters (stroke_color, stroke_width, fill_color, opacity,
     z_index, delay_ms, animate) apply to all actions.
@@ -78,11 +89,14 @@ async def draw(
     response already returned a created_element_id.
     """
     if action == "shape":
-        if shape is None or points is None:
-            raise ValueError("action='shape' requires 'shape' and 'points'")
+        if shape is None:
+            raise ValueError("action='shape' requires 'shape'")
         return await _draw_shape(
             shape=shape,
             points=points,
+            width=width,
+            height=height,
+            next=next,
             labels=labels,
             stroke_color=stroke_color,
             stroke_width=stroke_width,
@@ -95,12 +109,13 @@ async def draw(
         )
 
     if action == "text":
-        if text is None or x is None or y is None:
-            raise ValueError("action='text' requires 'text', 'x', and 'y'")
+        if text is None:
+            raise ValueError("action='text' requires 'text'")
         return await _draw_text(
             text=text,
             x=x,
             y=y,
+            next=next,
             font_size=font_size,
             stroke_color=stroke_color,
             stroke_width=stroke_width,
@@ -117,6 +132,7 @@ async def draw(
             raise ValueError("action='freehand' requires 'points'")
         return await _draw_freehand(
             points=points,
+            next=next,
             stroke_color=stroke_color,
             stroke_width=stroke_width,
             fill_color=fill_color,
@@ -183,6 +199,9 @@ async def edit_canvas(
                          least one style field (stroke_color, stroke_width,
                          fill_color, opacity, z_index, delay_ms).
       "clear"         — wipe the entire canvas.
+      "new_line"      — move the placement cursor to next line.
+      "new_section"   — move the cursor with a larger section gap.
+      "move_cursor"   — jump the cursor to explicit `x`, `y`.
 
     Invocation condition: Only call when you need to change something that
     already exists.  Do not repeat a call with identical parameters.
@@ -243,10 +262,65 @@ async def edit_canvas(
     if action == "clear":
         return await _clear_canvas(tool_context=tool_context)
 
+    if action == "new_line":
+        cursor = get_cursor(resolve_session_id(tool_context))
+        cursor.new_line()
+        emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
+        return {
+            "status": "success",
+            "operation": "edit_canvas",
+            "applied_count": 0,
+            "created_element_ids": [],
+            "failed_operations": [],
+            "edit_summary": "Moved cursor to next line.",
+            "cursor_after": cursor.to_dict(),
+        }
+
+    if action == "new_section":
+        cursor = get_cursor(resolve_session_id(tool_context))
+        cursor.new_section()
+        emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
+        return {
+            "status": "success",
+            "operation": "edit_canvas",
+            "applied_count": 0,
+            "created_element_ids": [],
+            "failed_operations": [],
+            "edit_summary": "Started a new section.",
+            "cursor_after": cursor.to_dict(),
+        }
+
+    if action == "move_cursor":
+        cursor = get_cursor(resolve_session_id(tool_context))
+        if x is None or y is None:
+            # Graceful fallback: avoid terminating the live turn when the model
+            # emits an incomplete move_cursor call.
+            return {
+                "status": "error",
+                "operation": "edit_canvas",
+                "applied_count": 0,
+                "created_element_ids": [],
+                "failed_operations": [],
+                "edit_summary": "move_cursor ignored because x and y were not both provided.",
+                "cursor_after": cursor.to_dict(),
+            }
+        cursor.move_to(x=x, y=y)
+        emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
+        return {
+            "status": "success",
+            "operation": "edit_canvas",
+            "applied_count": 0,
+            "created_element_ids": [],
+            "failed_operations": [],
+            "edit_summary": f"Moved cursor to ({x}, {y}).",
+            "cursor_after": cursor.to_dict(),
+        }
+
     raise ValueError(
         f"edit_canvas: unknown action '{action}'. "
         "Must be 'delete', 'erase', 'move', 'resize', 'update_points', "
-        "'set_shape_labels', 'update_style', or 'clear'."
+        "'set_shape_labels', 'update_style', 'clear', 'new_line', "
+        "'new_section', or 'move_cursor'."
     )
 
 
@@ -257,10 +331,11 @@ async def edit_canvas(
 async def graph(
     action: str,
     # common viewport
-    x: float = 0.1,
-    y: float = 0.05,
+    x: float | None = None,
+    y: float | None = None,
     width: float = 0.8,
     height: float = 0.45,
+    next: str = "below",
     domain_min: float = -10.0,
     domain_max: float = 10.0,
     y_min: float = -10.0,
@@ -282,6 +357,8 @@ async def graph(
 
     action must be one of:
       "axes_grid"     — set up a graph viewport with axes and grid lines.
+                         Omit `x`/`y` to auto-place at cursor; use `next`
+                         to control cursor flow after placement.
       "number_line"   — draw a number line with ticks and labels.
                          Requires `x`, `y`, `width`.
       "plot_function" — plot a mathematical expression (e.g. "2*x + 1").
@@ -299,6 +376,7 @@ async def graph(
     if action == "axes_grid":
         return await _draw_axes_grid(
             x=x, y=y, width=width, height=height,
+            next=next,
             grid_lines=grid_lines,
             domain_min=domain_min, domain_max=domain_max,
             y_min=y_min, y_max=y_max,
@@ -306,6 +384,8 @@ async def graph(
         )
 
     if action == "number_line":
+        if x is None or y is None:
+            raise ValueError("action='number_line' requires 'x' and 'y'")
         return await _draw_number_line(
             x=x, y=y, width=width,
             min_value=min_value, max_value=max_value,
@@ -318,7 +398,10 @@ async def graph(
             raise ValueError("action='plot_function' requires 'expression'")
         return await _plot_function_2d(
             expression=expression,
-            x=x, y=y, width=width, height=height,
+            x=0.1 if x is None else x,
+            y=0.05 if y is None else y,
+            width=width,
+            height=height,
             domain_min=domain_min, domain_max=domain_max,
             y_min=y_min, y_max=y_max,
             samples=samples,

@@ -54,6 +54,7 @@ let currentOptions: LiveRunOptions = {
 };
 let onEventCallback: OnEvent | null = null;
 let onStatusCallback: OnStatus | null = null;
+let lastCanvasMetrics: { canvas_width_px: number; canvas_height_px: number } | null = null;
 
 function setStatus(status: LiveConnectionStatus): void {
   onStatusCallback?.(status);
@@ -115,6 +116,9 @@ function openSocket(
     if (socket !== ws) return;
     reconnectAttempt = 0;
     setStatus("connected");
+    if (lastCanvasMetrics) {
+      ws.send(JSON.stringify({ type: "canvas_metrics", ...lastCanvasMetrics }));
+    }
   };
 
   ws.onmessage = (event: MessageEvent) => {
@@ -214,5 +218,19 @@ export function sendImageFrame(base64Data: string, mimeType: string): boolean {
       mimeType,
     }),
   );
+  return true;
+}
+
+export function sendCanvasMetrics(canvasWidthPx: number, canvasHeightPx: number): boolean {
+  if (!Number.isFinite(canvasWidthPx) || !Number.isFinite(canvasHeightPx)) return false;
+  if (canvasWidthPx <= 0 || canvasHeightPx <= 0) return false;
+
+  lastCanvasMetrics = {
+    canvas_width_px: Math.round(canvasWidthPx),
+    canvas_height_px: Math.round(canvasHeightPx),
+  };
+
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify({ type: "canvas_metrics", ...lastCanvasMetrics }));
   return true;
 }

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from agent.tools import _shared, core, editing, math_helpers
+from agent.tools import _cursor_store, _shared, core, editing, math_helpers, unified
 from agent.tools.models import DrawShapeInput, HighlightInput
 from drawing_client import DrawingCommandResult
 
@@ -57,8 +57,14 @@ class _FakeClient:
 @pytest.fixture(autouse=True)
 def _fake_client(monkeypatch: pytest.MonkeyPatch) -> _FakeClient:
     client = _FakeClient()
+    _shared._deduplicator = None
     monkeypatch.setattr(_shared, "get_client", lambda: client)
     return client
+
+
+@pytest.fixture(autouse=True)
+def _reset_cursor_store() -> None:
+    _cursor_store._sessions.clear()
 
 
 @pytest.mark.asyncio
@@ -365,3 +371,241 @@ def test_highlight_rejects_unsupported_type() -> None:
                 "style": {},
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_draw_text_auto_stacks_vertically(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_cursor")
+
+    first = await core.draw_text(text="Step 1")
+    second = await core.draw_text(text="Step 2")
+    third = await core.draw_text(text="Step 3")
+
+    assert first["cursor_after"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert first["cursor_after"]["y"] == pytest.approx(0.08, abs=1e-3)
+    assert second["cursor_after"]["y"] > first["cursor_after"]["y"]
+    assert third["cursor_after"]["y"] > second["cursor_after"]["y"]
+
+    assert _fake_client.calls[0]["payload"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert _fake_client.calls[1]["payload"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert _fake_client.calls[2]["payload"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert _fake_client.calls[1]["payload"]["y"] > _fake_client.calls[0]["payload"]["y"]
+    assert _fake_client.calls[2]["payload"]["y"] > _fake_client.calls[1]["payload"]["y"]
+
+
+@pytest.mark.asyncio
+async def test_shape_then_text_auto_placement_avoids_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_cursor")
+
+    shape_result = await core.draw_shape(shape="right_triangle", width=0.3, height=0.25)
+    text_result = await core.draw_text(text="a^2 + b^2 = c^2")
+
+    assert shape_result["element_bbox"]["height"] == pytest.approx(0.25, abs=1e-3)
+    assert text_result["element_bbox"]["y"] >= shape_result["element_bbox"]["y"] + shape_result["element_bbox"]["height"]
+    assert _fake_client.calls[1]["payload"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert _fake_client.calls[1]["payload"]["y"] >= 0.299
+
+
+@pytest.mark.asyncio
+async def test_shape_auto_size_normalizes_large_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_cursor")
+
+    result = await core.draw_shape(shape="right_triangle", width=200, height=200)
+
+    payload = _fake_client.calls[0]["payload"]
+    point_xs = [point["x"] for point in payload["points"]]
+    point_ys = [point["y"] for point in payload["points"]]
+    assert all(0.0 <= x <= 1.0 for x in point_xs)
+    assert all(0.0 <= y <= 2.0 for y in point_ys)
+    assert result["placement_warning"].startswith("Shape width/height were auto-normalized")
+
+
+@pytest.mark.asyncio
+async def test_side_by_side_then_below_all_resets_to_left_margin(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_cursor")
+
+    await core.draw_shape(shape="right_triangle", width=0.3, height=0.25, next="right")
+    await core.draw_text(text="a^2 + b^2 = c^2")
+    reset = await core.draw_text(text="9 + 16 = 25", next="below_all")
+    await core.draw_text(text="new full width line")
+
+    assert _fake_client.calls[1]["payload"]["x"] == pytest.approx(0.39, abs=1e-3)
+    assert _fake_client.calls[2]["payload"]["x"] == pytest.approx(0.39, abs=1e-3)
+    assert reset["cursor_after"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert reset["cursor_after"]["y"] >= 0.299
+    assert _fake_client.calls[3]["payload"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert _fake_client.calls[3]["payload"]["y"] >= 0.299
+
+
+@pytest.mark.asyncio
+async def test_manual_text_bypass_does_not_move_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_cursor")
+
+    first = await core.draw_text(text="auto first")
+    manual = await core.draw_text(text="annotation", x=0.5, y=0.1)
+    second = await core.draw_text(text="auto second")
+
+    assert "cursor_after" in first
+    assert "cursor_after" not in manual
+    assert _fake_client.calls[1]["payload"]["x"] == pytest.approx(0.5, abs=1e-3)
+    assert _fake_client.calls[1]["payload"]["y"] == pytest.approx(0.1, abs=1e-3)
+    assert _fake_client.calls[2]["payload"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert _fake_client.calls[2]["payload"]["y"] == pytest.approx(first["cursor_after"]["y"], abs=1e-3)
+    assert second["cursor_after"]["y"] > first["cursor_after"]["y"]
+
+
+@pytest.mark.asyncio
+async def test_partial_text_coords_falls_back_to_cursor_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_cursor")
+
+    result = await core.draw_text(text="x = sqrt(25)", x=0.3, y=None)
+
+    assert _fake_client.calls[0]["payload"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert _fake_client.calls[0]["payload"]["y"] == pytest.approx(0.03, abs=1e-3)
+    assert "cursor_after" in result
+    assert result["placement_warning"].startswith("Partial text coordinates were ignored")
+
+
+@pytest.mark.asyncio
+async def test_manual_shape_points_are_clamped_into_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_cursor")
+
+    result = await core.draw_shape(
+        shape="triangle",
+        points=[
+            {"x": -5, "y": 200.03},
+            {"x": 100.06, "y": -3},
+            {"x": 200.06, "y": 200.03},
+            {"x": -5, "y": 200.03},
+        ],
+    )
+
+    payload = _fake_client.calls[0]["payload"]
+    point_xs = [point["x"] for point in payload["points"]]
+    point_ys = [point["y"] for point in payload["points"]]
+    assert all(0.0 <= x <= 1.0 for x in point_xs)
+    assert all(0.0 <= y <= 2.0 for y in point_ys)
+    assert result["points_warning"].startswith("Some shape points were clamped")
+
+
+@pytest.mark.asyncio
+async def test_clear_canvas_resets_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_cursor")
+
+    await core.draw_text(text="before clear")
+    await core.clear_canvas()
+    await core.draw_text(text="after clear")
+
+    assert [call["operation"] for call in _fake_client.calls] == ["draw_text", "clear_canvas", "draw_text"]
+    assert _fake_client.calls[2]["payload"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert _fake_client.calls[2]["payload"]["y"] == pytest.approx(0.03, abs=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_axes_grid_auto_placement_uses_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_cursor")
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_cursor")
+
+    grid_result = await math_helpers.draw_axes_grid(width=0.4, height=0.35)
+    await core.draw_text(text="below graph")
+
+    assert _fake_client.calls[0]["operation"] == "set_graph_viewport"
+    assert _fake_client.calls[0]["payload"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert _fake_client.calls[0]["payload"]["y"] == pytest.approx(0.03, abs=1e-3)
+    assert grid_result["cursor_after"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert grid_result["cursor_after"]["y"] == pytest.approx(0.4, abs=1e-3)
+    assert _fake_client.calls[1]["payload"]["y"] == pytest.approx(0.4, abs=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_unified_cursor_actions_move_new_line_and_section(_fake_client: _FakeClient) -> None:
+    context = SimpleNamespace(state={"session_id": "s_unified"})
+
+    section = await unified.edit_canvas(action="new_section", tool_context=context)
+    assert section["cursor_after"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert section["cursor_after"]["y"] > 0.03
+
+    moved = await unified.edit_canvas(action="move_cursor", x=0.4, y=0.3, tool_context=context)
+    assert moved["cursor_after"]["x"] == pytest.approx(0.4, abs=1e-3)
+    assert moved["cursor_after"]["y"] == pytest.approx(0.3, abs=1e-3)
+
+    await unified.draw(action="text", text="at moved cursor", tool_context=context)
+    assert _fake_client.calls[0]["payload"]["x"] == pytest.approx(0.4, abs=1e-3)
+    assert _fake_client.calls[0]["payload"]["y"] == pytest.approx(0.3, abs=1e-3)
+
+    line = await unified.edit_canvas(action="new_line", tool_context=context)
+    await unified.draw(action="text", text="next line", tool_context=context)
+    assert line["cursor_after"]["x"] == pytest.approx(0.4, abs=1e-3)
+    assert _fake_client.calls[1]["payload"]["x"] == pytest.approx(0.4, abs=1e-3)
+    assert _fake_client.calls[1]["payload"]["y"] > 0.3
+
+
+@pytest.mark.asyncio
+async def test_unified_move_cursor_missing_coords_returns_error_not_exception() -> None:
+    context = SimpleNamespace(state={"session_id": "s_unified_missing"})
+
+    response = await unified.edit_canvas(action="move_cursor", x=0.5, y=None, tool_context=context)
+
+    assert response["status"] == "error"
+    assert response["edit_summary"].startswith("move_cursor ignored")
+    assert response["cursor_after"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert response["cursor_after"]["y"] == pytest.approx(0.03, abs=1e-3)
+
+
+def test_update_cursor_viewport_sets_dynamic_bottom_edge() -> None:
+    state = _cursor_store.update_cursor_viewport(
+        "s_cursor_viewport",
+        canvas_width_px=1600,
+        canvas_height_px=900,
+    )
+    snapshot = state.to_snapshot_dict()
+    # 900/1600 = 0.5625; minus 0.03 padding => ~0.5325
+    assert snapshot["bottom_edge"] == pytest.approx(0.5325, abs=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_cursor_wraps_before_bottom_edge(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_cursor_bottom")
+    _cursor_store.update_cursor_viewport(
+        "s_cursor_bottom",
+        canvas_width_px=1000,
+        canvas_height_px=560,
+    )
+
+    for idx in range(20):
+        result = await core.draw_text(text=f"Line {idx}")
+        bbox = result["element_bbox"]
+        assert bbox["y"] + bbox["height"] <= 0.53 + 1e-6
+
+    x_values = [call["payload"]["x"] for call in _fake_client.calls]
+    assert max(x_values) > 0.06

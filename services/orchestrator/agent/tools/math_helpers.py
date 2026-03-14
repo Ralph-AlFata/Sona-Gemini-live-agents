@@ -7,7 +7,9 @@ import math
 from google.adk.tools import ToolContext
 from sympy import Symbol, lambdify, sympify
 
+from agent.tools._cursor_store import get_cursor
 from agent.tools._shared import execute_tool_command, resolve_session_id
+from agent.tools._trace import emit_draw_trace
 from agent.tools.core import shape_to_points
 
 _DEFAULT_PLOT_COLOR = "#e74c3c"
@@ -24,13 +26,15 @@ _DEFAULT_GRAPH_VIEWPORT = {
     "y_min": -10.0,
     "y_max": 10.0,
 }
+_VALID_NEXT_DIRECTIONS = {"below", "right", "left", "below_all"}
 
 
 async def draw_axes_grid(
-    x: float = 0.1,
-    y: float = 0.05,
+    x: float | None = None,
+    y: float | None = None,
     width: float = 0.8,
     height: float = 0.45,
+    next: str = "below",
     grid_lines: int = 10,
     domain_min: float = -10.0,
     domain_max: float = 10.0,
@@ -40,15 +44,32 @@ async def draw_axes_grid(
 ) -> dict:
     """Set up a graph viewport with axes and grid lines.
 
+    If `x`/`y` are omitted, the graph viewport is auto-placed at the cursor.
+    Use `next` to control cursor flow after placement.
+
     Invocation condition: Call ONCE per graph. Do not redraw the grid if it
     already exists on the canvas.
     """
     if width <= 0 or height <= 0:
         raise ValueError("width and height must be greater than 0")
+    if next not in _VALID_NEXT_DIRECTIONS:
+        raise ValueError(f"next must be one of {sorted(_VALID_NEXT_DIRECTIONS)}")
+    if (x is None) != (y is None):
+        raise ValueError("x and y must be both provided or both omitted")
     if domain_max <= domain_min:
         raise ValueError("domain_max must be greater than domain_min")
     if y_max <= y_min:
         raise ValueError("y_max must be greater than y_min")
+
+    session_id = resolve_session_id(tool_context)
+    used_cursor = False
+    cursor = None
+    if x is None and y is None:
+        cursor = get_cursor(session_id)
+        bbox = cursor.place(width, height, next_direction=next)
+        x = bbox.x
+        y = bbox.y
+        used_cursor = True
 
     grid_lines = max(2, min(30, grid_lines))
     viewport = {
@@ -62,7 +83,7 @@ async def draw_axes_grid(
         "y_max": y_max,
     }
     result = await execute_tool_command(
-        session_id=resolve_session_id(tool_context),
+        session_id=session_id,
         operation="set_graph_viewport",
         payload={
             **viewport,
@@ -77,6 +98,8 @@ async def draw_axes_grid(
         },
     )
     _store_graph_viewport(tool_context, viewport)
+    if used_cursor and cursor is not None:
+        emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
 
     return {
         "status": "success",
@@ -85,6 +108,13 @@ async def draw_axes_grid(
         "applied_count": result.applied_count,
         "created_element_ids": result.created_element_ids,
         "failed_operations": result.failed_operations,
+        "element_bbox": {
+            "x": round(viewport["x"], 4),
+            "y": round(viewport["y"], 4),
+            "width": round(viewport["width"], 4),
+            "height": round(viewport["height"], 4),
+        },
+        **({"cursor_after": cursor.to_dict()} if used_cursor and cursor is not None else {}),
     }
 
 

@@ -8,6 +8,8 @@
   --sona-brand: #0f766e;
   --sona-brand-soft: #d9f3f0;
   --sona-danger: #b93a3a;
+  --sona-sidebar-open-width: min(88vw, 320px);
+  --sona-chat-width: 340px;
 }
 
 .app {
@@ -261,7 +263,7 @@
 }
 
 .session-sidebar.open {
-  width: min(88vw, 320px);
+  width: var(--sona-sidebar-open-width);
   pointer-events: auto;
   border-right-color: var(--sona-border);
 }
@@ -467,8 +469,15 @@
   flex: 1;
   overflow: hidden;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(0, 1fr) var(--sona-chat-width);
   min-height: 0;
+  transition: grid-template-columns 0.24s ease;
+}
+
+.app-layout.sidebar-open .app-canvas {
+  grid-template-columns:
+    minmax(0, 1fr)
+    max(0px, calc(var(--sona-chat-width) - var(--sona-sidebar-open-width)));
 }
 
 .canvas-shell {
@@ -614,12 +623,13 @@
 }
 
 @media (max-width: 1180px) {
-  .header-email {
-    display: none;
+  :root {
+    --sona-sidebar-open-width: min(88vw, 280px);
+    --sona-chat-width: 300px;
   }
 
-  .app-canvas {
-    grid-template-columns: minmax(0, 1fr) 300px;
+  .header-email {
+    display: none;
   }
 }
 
@@ -646,6 +656,7 @@
   }
 
   .session-sidebar.open {
+    width: min(95vw, 340px);
     transform: translateX(0);
     pointer-events: auto;
   }
@@ -661,6 +672,10 @@
   .app-canvas {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) 300px;
+  }
+
+  .app-layout.sidebar-open .app-canvas {
+    grid-template-columns: 1fr;
   }
 
   .canvas-shell {
