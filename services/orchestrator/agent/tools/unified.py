@@ -411,6 +411,18 @@ async def graph(
     - Do not use `draw` to approximate a graph or plotted line.
     """
     if action == "axes_grid":
+        if (x is None) != (y is None):
+            cursor = get_cursor(resolve_session_id(tool_context))
+            emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
+            return {
+                "status": "error",
+                "operation": "draw_axes_grid",
+                "applied_count": 0,
+                "created_element_ids": [],
+                "failed_operations": [],
+                "graph_summary": "axes_grid ignored because x and y were not both provided.",
+                "cursor_after": cursor.to_dict(),
+            }
         return await _draw_axes_grid(
             x=x, y=y, width=width, height=height,
             next=next,

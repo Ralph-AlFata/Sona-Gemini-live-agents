@@ -68,7 +68,16 @@ class DrawTextPayload(_StrictBase):
 
 class DrawFreehandPayload(_StrictBase):
     points: list[Point] = Field(min_length=2)
+    render_mode: Literal["freehand", "polyline"] = "freehand"
+    graph_clip: "GraphClipPayload | None" = None
     style: StylePayload = Field(default_factory=StylePayload)
+
+
+class GraphClipPayload(_StrictBase):
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=2.0)
+    width: float = Field(gt=0.0, le=1.0)
+    height: float = Field(gt=0.0, le=2.0)
 
 
 class HighlightPayload(_StrictBase):

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Stage, Layer, Rect, Text, Line, Shape } from "react-konva";
+import { Stage, Layer, Rect, Text, Line, Shape, Group } from "react-konva";
 import type { Stage as KonvaStage } from "konva/lib/Stage";
 import type { DSLMessageRaw } from "../services/drawingSocket";
 import { sendCanvasMetrics } from "../services/orchestratorLive";
@@ -12,6 +12,13 @@ interface PointNorm {
 }
 
 interface NormalizedBBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface ClipRect {
   x: number;
   y: number;
   width: number;
@@ -55,6 +62,8 @@ interface StrokeItem {
   strokeWidth: number;
   owner: "user" | "agent";
   elementType: "freehand" | "shape";
+  renderMode?: "freehand" | "polyline";
+  clipRect?: ClipRect;
   highlightKind?: "circle" | "pointer";
   highlightPart?: "ellipse" | "arrow";
   targetElementIds?: string[];
@@ -252,6 +261,22 @@ function toPointNorm(value: unknown): PointNorm | null {
   return {
     x: Math.max(0, Math.min(1, maybeX)),
     y: Math.max(0, maybeY),
+  };
+}
+
+function toClipRect(value: unknown): ClipRect | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const width = asNumber(raw["width"], 0);
+  const height = asNumber(raw["height"], 0);
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+  return {
+    x: Math.max(0, Math.min(1, asNumber(raw["x"], 0))),
+    y: Math.max(0, Math.min(2, asNumber(raw["y"], 0))),
+    width: Math.max(0.001, Math.min(1, width)),
+    height: Math.max(0.001, Math.min(2, height)),
   };
 }
 
@@ -697,17 +722,21 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
     }
     if (points.length < 2) return;
 
-    // Smooth freehand control points using Catmull-Rom spline interpolation
-    const smoothedPoints = elementType === "freehand" ? catmullRomSpline(points) : points;
-
     const color = asString(payload["color"], "#111");
     const strokeWidth = asNumber(payload["stroke_width"], 2);
     const strokeId = `${elementType}-${elementId}`;
+    const renderMode =
+      elementType === "freehand" && payload["render_mode"] === "polyline"
+        ? "polyline"
+        : "freehand";
+    const clipRect = toClipRect(payload["graph_clip"]);
+    const smoothedPoints =
+      elementType === "freehand" && renderMode !== "polyline" ? catmullRomSpline(points) : points;
 
     if (!animate) {
       setStrokes((prev) => {
         const without = prev.filter((stroke) => stroke.elementId !== elementId);
-        const svgPath = elementType === "freehand"
+        const svgPath = elementType === "freehand" && renderMode !== "polyline"
           ? computeFreehandPath(smoothedPoints, dimensions.width, strokeWidth * 1.5)
           : undefined;
         return [
@@ -720,6 +749,8 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
             strokeWidth,
             owner: "agent",
             elementType,
+            renderMode,
+            clipRect: clipRect ?? undefined,
             svgPath,
             ...strokeHighlightMeta,
           },
@@ -731,7 +762,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
     const firstPoint = smoothedPoints[0];
     if (!firstPoint) return;
 
-    if (elementType === "freehand") {
+    if (elementType === "freehand" && renderMode !== "polyline") {
       await sleep(asNumber(payload["delay_ms"], 0));
     }
 
@@ -747,12 +778,14 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
           strokeWidth,
           owner: "agent",
           elementType,
+          renderMode,
+          clipRect: clipRect ?? undefined,
           ...strokeHighlightMeta,
         },
       ];
     });
 
-    if (elementType === "freehand") {
+    if (elementType === "freehand" && renderMode !== "polyline") {
       // Freehand: animate by appending points and recomputing the
       // perfect-freehand outline on each frame for natural variable-width strokes.
       const stepDelay = Math.max(6, Math.min(FREEHAND_STEP_DELAY_MS, Math.round(asNumber(payload["delay_ms"], 35) / 2)));
@@ -774,8 +807,8 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
         await sleep(stepDelay);
       }
     } else {
-      // Shapes: use linear segment interpolation for animation
-      await animateStroke(strokeId, points, SHAPE_STEP_DELAY_MS);
+      // Shapes and deterministic polylines use linear segment interpolation.
+      await animateStroke(strokeId, smoothedPoints, SHAPE_STEP_DELAY_MS);
     }
   }
 
@@ -882,7 +915,12 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
           strokeWidth,
           owner: "agent",
           elementType: element.element_type,
-          svgPath: element.element_type === "freehand" && dimensions.width > 0
+          renderMode:
+            element.element_type === "freehand" && payload["render_mode"] === "polyline"
+              ? "polyline"
+              : "freehand",
+          clipRect: toClipRect(payload["graph_clip"]) ?? undefined,
+          svgPath: element.element_type === "freehand" && payload["render_mode"] !== "polyline" && dimensions.width > 0
             ? computeFreehandPath(points, dimensions.width, strokeWidth * 1.5)
             : undefined,
           highlightKind: asHighlightKind(payload["highlight_kind"]) ?? undefined,
@@ -1356,10 +1394,28 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
                 }
               };
               const strokeOpacity = toolMode === "delete" && stroke.owner === "user" ? 0.8 : 1;
+              const lineNode = (
+                <Line
+                  key={stroke.id}
+                  points={stroke.points.flatMap((point) => [
+                    point.x * dimensions.width,
+                    point.y * dimensions.width,
+                  ])}
+                  stroke={isSelected ? "#2563eb" : stroke.color}
+                  strokeWidth={isSelected ? stroke.strokeWidth + 1 : stroke.strokeWidth}
+                  lineCap="round"
+                  lineJoin="round"
+                  dash={isSelected ? [6, 3] : undefined}
+                  hitStrokeWidth={toolMode === "delete" ? 24 : 12}
+                  onClick={handleClick}
+                  onTap={handleClick}
+                  opacity={strokeOpacity}
+                />
+              );
 
               // Freehand strokes with svgPath use perfect-freehand filled polygon
               if (stroke.svgPath && stroke.elementType === "freehand") {
-                return (
+                const shapeNode = (
                   <Shape
                     key={stroke.id}
                     sceneFunc={(ctx, shape) => {
@@ -1378,26 +1434,35 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
                     opacity={strokeOpacity}
                   />
                 );
+                if (!stroke.clipRect) {
+                  return shapeNode;
+                }
+                return (
+                  <Group
+                    key={`clip-${stroke.id}`}
+                    clipX={stroke.clipRect.x * dimensions.width}
+                    clipY={stroke.clipRect.y * dimensions.width}
+                    clipWidth={stroke.clipRect.width * dimensions.width}
+                    clipHeight={stroke.clipRect.height * dimensions.width}
+                  >
+                    {shapeNode}
+                  </Group>
+                );
               }
 
-              // Shapes and fallback: render as Konva Line
+              if (!stroke.clipRect) {
+                return lineNode;
+              }
               return (
-                <Line
-                  key={stroke.id}
-                  points={stroke.points.flatMap((point) => [
-                    point.x * dimensions.width,
-                    point.y * dimensions.width,
-                  ])}
-                  stroke={isSelected ? "#2563eb" : stroke.color}
-                  strokeWidth={isSelected ? stroke.strokeWidth + 1 : stroke.strokeWidth}
-                  lineCap="round"
-                  lineJoin="round"
-                  dash={isSelected ? [6, 3] : undefined}
-                  hitStrokeWidth={toolMode === "delete" ? 24 : 12}
-                  onClick={handleClick}
-                  onTap={handleClick}
-                  opacity={strokeOpacity}
-                />
+                <Group
+                  key={`clip-${stroke.id}`}
+                  clipX={stroke.clipRect.x * dimensions.width}
+                  clipY={stroke.clipRect.y * dimensions.width}
+                  clipWidth={stroke.clipRect.width * dimensions.width}
+                  clipHeight={stroke.clipRect.height * dimensions.width}
+                >
+                  {lineNode}
+                </Group>
               );
             })}
             {localStroke.length > 1 && (() => {

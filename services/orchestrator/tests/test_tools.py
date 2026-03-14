@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from agent.tools import _cursor_store, _shared, core, editing, math_helpers, unified
+from agent.tools import _canonical, _cursor_store, _shared, core, editing, math_helpers, unified
 from agent.tools.models import DrawShapeInput, HighlightInput
 from drawing_client import DrawingCommandResult
 
@@ -122,6 +122,27 @@ async def test_draw_shape_with_labels_uses_shape_label_edit_operation(
         "set_shape_labels",
     ]
     assert _fake_client.calls[1]["payload"]["element_id"] == result["shape_id"]
+    assert _fake_client.calls[1]["payload"]["labels"] == ["a", "c", "b"]
+
+
+@pytest.mark.asyncio
+async def test_draw_shape_preserves_labels_when_hypotenuse_is_already_last_side(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_test")
+
+    await core.draw_shape(
+        shape="right_triangle",
+        points=[
+            {"x": 0.1, "y": 0.2},
+            {"x": 0.4, "y": 0.2},
+            {"x": 0.4, "y": 0.5},
+            {"x": 0.1, "y": 0.2},
+        ],
+        labels=["a", "b", "c"],
+    )
+
     assert _fake_client.calls[1]["payload"]["labels"] == ["a", "b", "c"]
 
 
@@ -149,6 +170,53 @@ async def test_draw_shape_skips_blank_labels(
         "draw_shape",
         "set_shape_labels",
     ]
+
+
+def test_enforce_canonical_labels_right_triangle_two_labels_is_noop() -> None:
+    points = [
+        {"x": 0.1, "y": 0.5},
+        {"x": 0.4, "y": 0.5},
+        {"x": 0.1, "y": 0.2},
+        {"x": 0.1, "y": 0.5},
+    ]
+
+    assert _canonical.enforce_canonical_labels("right_triangle", points, ["p", "q"]) == ["p", "q"]
+
+
+def test_enforce_canonical_labels_triangle_is_noop() -> None:
+    points = [
+        {"x": 0.1, "y": 0.5},
+        {"x": 0.3, "y": 0.2},
+        {"x": 0.5, "y": 0.5},
+        {"x": 0.1, "y": 0.5},
+    ]
+
+    assert _canonical.enforce_canonical_labels("triangle", points, ["a", "b", "c"]) == ["a", "b", "c"]
+
+
+def test_enforce_canonical_labels_right_triangle_places_last_label_on_hypotenuse() -> None:
+    points = [
+        {"x": 0.1, "y": 0.5},
+        {"x": 0.4, "y": 0.5},
+        {"x": 0.1, "y": 0.2},
+        {"x": 0.1, "y": 0.5},
+    ]
+
+    assert _canonical.enforce_canonical_labels("right_triangle", points, ["x", "y", "z"]) == ["x", "z", "y"]
+
+
+def test_enforce_canonical_labels_is_deterministic_for_same_inputs() -> None:
+    points = [
+        {"x": 0.1, "y": 0.5},
+        {"x": 0.4, "y": 0.5},
+        {"x": 0.1, "y": 0.2},
+        {"x": 0.1, "y": 0.5},
+    ]
+
+    first = _canonical.enforce_canonical_labels("right_triangle", points, ["a", "b", "c"])
+    second = _canonical.enforce_canonical_labels("right_triangle", points, ["a", "b", "c"])
+
+    assert first == second == ["a", "c", "b"]
 
 
 @pytest.mark.asyncio
@@ -210,6 +278,13 @@ async def test_plot_function_uses_requested_stroke_color_and_adds_label(
     assert "y = 2x + 1" in result["plot_summary"]
 
     assert [call["operation"] for call in _fake_client.calls] == ["draw_freehand", "draw_text"]
+    assert _fake_client.calls[0]["payload"]["render_mode"] == "polyline"
+    assert _fake_client.calls[0]["payload"]["graph_clip"] == {
+        "x": 0.1,
+        "y": 0.05,
+        "width": 0.8,
+        "height": 0.45,
+    }
     assert _fake_client.calls[0]["payload"]["style"]["stroke_color"] == "#ff0000"
     assert _fake_client.calls[1]["payload"]["style"]["stroke_color"] == "#ff0000"
     assert _fake_client.calls[1]["payload"]["text"] == "y = 2x + 1"
@@ -260,6 +335,13 @@ async def test_plot_function_reuses_last_axes_grid_viewport(
 
     assert result["status"] == "success"
     assert _fake_client.calls[0]["operation"] == "draw_freehand"
+    assert _fake_client.calls[0]["payload"]["render_mode"] == "polyline"
+    assert _fake_client.calls[0]["payload"]["graph_clip"] == {
+        "x": 0.2,
+        "y": 0.1,
+        "width": 0.6,
+        "height": 0.4,
+    }
     first_point = _fake_client.calls[0]["payload"]["points"][0]
     last_point = _fake_client.calls[0]["payload"]["points"][-1]
     assert first_point["x"] == pytest.approx(0.2, abs=1e-6)
@@ -289,6 +371,59 @@ async def test_draw_axes_grid_uses_viewport_command(monkeypatch: pytest.MonkeyPa
     assert _fake_client.calls[0]["payload"]["grid_lines"] == 12
     assert _fake_client.calls[0]["payload"]["domain_min"] == -5
     assert _fake_client.calls[0]["payload"]["y_max"] == 8
+
+
+@pytest.mark.asyncio
+async def test_draw_axes_grid_normalizes_oversized_auto_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await math_helpers.draw_axes_grid(width=400, height=400)
+
+    payload = _fake_client.calls[0]["payload"]
+    assert payload["x"] == pytest.approx(0.06, abs=1e-6)
+    assert payload["y"] == pytest.approx(0.03, abs=1e-6)
+    assert payload["width"] <= 0.88 + 1e-6
+    assert payload["height"] <= 2.0 + 1e-6
+    assert payload["x"] + payload["width"] <= 1.0 + 1e-6
+    assert payload["y"] + payload["height"] <= 2.0 + 1e-6
+    assert result["placement_warning"].startswith("Graph width/height were auto-normalized")
+
+
+@pytest.mark.asyncio
+async def test_draw_axes_grid_clamps_manual_viewport_to_canvas(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await math_helpers.draw_axes_grid(x=0.8, y=1.8, width=0.6, height=0.5)
+
+    payload = _fake_client.calls[0]["payload"]
+    assert payload["x"] + payload["width"] <= 1.0 + 1e-6
+    assert payload["y"] + payload["height"] <= 2.0 + 1e-6
+    assert result["placement_warning"].startswith("Graph viewport was clamped")
+
+
+@pytest.mark.asyncio
+async def test_draw_axes_grid_normalizes_oversized_manual_dimensions_before_clamping(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await math_helpers.draw_axes_grid(x=0.5, y=0.4, width=400, height=300)
+
+    payload = _fake_client.calls[0]["payload"]
+    assert payload["width"] == pytest.approx(0.4, abs=1e-6)
+    assert payload["height"] == pytest.approx(0.3, abs=1e-6)
+    assert payload["x"] == pytest.approx(0.5, abs=1e-6)
+    assert payload["y"] == pytest.approx(0.4, abs=1e-6)
+    assert payload["x"] + payload["width"] <= 1.0 + 1e-6
+    assert payload["y"] + payload["height"] <= 2.0 + 1e-6
+    assert result["placement_warning"].startswith("Graph width/height were auto-normalized")
 
 
 @pytest.mark.asyncio
@@ -542,6 +677,45 @@ async def test_axes_grid_auto_placement_uses_cursor(
     assert grid_result["cursor_after"]["x"] == pytest.approx(0.06, abs=1e-3)
     assert grid_result["cursor_after"]["y"] == pytest.approx(0.4, abs=1e-3)
     assert _fake_client.calls[1]["payload"]["y"] == pytest.approx(0.4, abs=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_plot_function_accepts_implicit_multiplication(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await math_helpers.plot_function_2d(
+        expression="2x - 4",
+        domain_min=-2,
+        domain_max=6,
+        y_min=-6,
+        y_max=8,
+    )
+
+    assert result["status"] == "success"
+    assert [call["operation"] for call in _fake_client.calls] == ["draw_freehand", "draw_text"]
+    assert _fake_client.calls[1]["payload"]["text"] == "y = 2x - 4"
+
+
+@pytest.mark.asyncio
+async def test_graph_axes_grid_partial_coords_returns_error_not_exception() -> None:
+    context = SimpleNamespace(state={"session_id": "s_graph_partial"})
+
+    response = await unified.graph(
+        action="axes_grid",
+        x=0.5,
+        y=None,
+        width=400,
+        height=400,
+        tool_context=context,
+    )
+
+    assert response["status"] == "error"
+    assert response["graph_summary"].startswith("axes_grid ignored")
+    assert response["cursor_after"]["x"] == pytest.approx(0.06, abs=1e-3)
+    assert response["cursor_after"]["y"] == pytest.approx(0.03, abs=1e-3)
 
 
 @pytest.mark.asyncio

@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 import math
 
 from google.adk.tools import ToolContext
-from sympy import Symbol, lambdify, sympify
+from sympy import Symbol, lambdify
+from sympy.parsing.sympy_parser import (
+    implicit_multiplication_application,
+    parse_expr,
+    standard_transformations,
+)
 
+from agent.tools._cursor import LEFT_MARGIN, RIGHT_EDGE
 from agent.tools._cursor_store import get_cursor
 from agent.tools._shared import execute_tool_command, resolve_session_id
 from agent.tools._trace import emit_draw_trace
 from agent.tools.core import shape_to_points
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_PLOT_COLOR = "#e74c3c"
 _DEFAULT_PLOT_LABEL_FONT_SIZE = 14
@@ -27,6 +36,59 @@ _DEFAULT_GRAPH_VIEWPORT = {
     "y_max": 10.0,
 }
 _VALID_NEXT_DIRECTIONS = {"below", "right", "left", "below_all"}
+_MAX_GRAPH_WIDTH = max(0.1, RIGHT_EDGE - LEFT_MARGIN)
+_MAX_GRAPH_HEIGHT = 2.0
+_SYMPY_TRANSFORMATIONS = standard_transformations + (implicit_multiplication_application,)
+
+
+def _normalize_graph_size(width: float, height: float) -> tuple[float, float, bool]:
+    """Normalize oversized graph viewport dimensions to canvas units."""
+    w = max(width, 0.001)
+    h = max(height, 0.001)
+    if w <= _MAX_GRAPH_WIDTH and h <= _MAX_GRAPH_HEIGHT:
+        return w, h, False
+
+    for factor in (0.01, 0.001, 0.1):
+        scaled_w = w * factor
+        scaled_h = h * factor
+        if scaled_w <= _MAX_GRAPH_WIDTH and scaled_h <= _MAX_GRAPH_HEIGHT:
+            return max(0.02, scaled_w), max(0.02, scaled_h), True
+
+    scale = max(w / _MAX_GRAPH_WIDTH, h / _MAX_GRAPH_HEIGHT, 1.0)
+    return (
+        max(0.02, min(_MAX_GRAPH_WIDTH, w / scale)),
+        max(0.02, min(_MAX_GRAPH_HEIGHT, h / scale)),
+        True,
+    )
+
+
+def _clamp_graph_viewport(x: float, y: float, width: float, height: float) -> tuple[dict[str, float], bool]:
+    """Clamp a graph viewport so the full rectangle stays on-canvas."""
+    clamped_width = max(0.001, min(_MAX_GRAPH_WIDTH, width))
+    clamped_height = max(0.001, min(_MAX_GRAPH_HEIGHT, height))
+    clamped_x = _clamp(x, 0.0, max(0.0, 1.0 - clamped_width))
+    clamped_y = _clamp(y, 0.0, max(0.0, 2.0 - clamped_height))
+    changed = (
+        clamped_x != x
+        or clamped_y != y
+        or clamped_width != width
+        or clamped_height != height
+    )
+    return {
+        "x": clamped_x,
+        "y": clamped_y,
+        "width": clamped_width,
+        "height": clamped_height,
+    }, changed
+
+
+def _parse_expression(expression: str):
+    """Parse expressions with implicit multiplication, e.g. `2x - 4`."""
+    return parse_expr(
+        expression,
+        transformations=_SYMPY_TRANSFORMATIONS,
+        evaluate=True,
+    )
 
 
 async def draw_axes_grid(
@@ -64,6 +126,8 @@ async def draw_axes_grid(
     session_id = resolve_session_id(tool_context)
     used_cursor = False
     cursor = None
+    normalized_size = False
+    width, height, normalized_size = _normalize_graph_size(width, height)
     if x is None and y is None:
         cursor = get_cursor(session_id)
         bbox = cursor.place(width, height, next_direction=next)
@@ -72,11 +136,9 @@ async def draw_axes_grid(
         used_cursor = True
 
     grid_lines = max(2, min(30, grid_lines))
+    viewport_rect, clamped_viewport = _clamp_graph_viewport(x, y, width, height)
     viewport = {
-        "x": max(0.0, min(1.0, x)),
-        "y": max(0.0, min(2.0, y)),
-        "width": max(0.001, min(1.0, width)),
-        "height": max(0.001, min(2.0, height)),
+        **viewport_rect,
         "domain_min": domain_min,
         "domain_max": domain_max,
         "y_min": y_min,
@@ -101,7 +163,7 @@ async def draw_axes_grid(
     if used_cursor and cursor is not None:
         emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
 
-    return {
+    response = {
         "status": "success",
         "operation": "draw_axes_grid",
         "command_id": result.command_id,
@@ -116,6 +178,15 @@ async def draw_axes_grid(
         },
         **({"cursor_after": cursor.to_dict()} if used_cursor and cursor is not None else {}),
     }
+    if normalized_size:
+        response["placement_warning"] = (
+            "Graph width/height were auto-normalized to canvas coordinates."
+        )
+    if clamped_viewport:
+        response["placement_warning"] = (
+            "Graph viewport was clamped to remain within canvas bounds."
+        )
+    return response
 
 
 async def draw_number_line(
@@ -342,7 +413,17 @@ async def plot_function_2d(
     y_max = viewport["y_max"]
 
     var_x = Symbol("x")
-    expr = sympify(expression)
+    try:
+        expr = _parse_expression(expression)
+    except Exception as exc:
+        logger.info("PLOT_FUNCTION_PARSE_ERROR expression=%r error=%s", expression, exc)
+        return {
+            "status": "error",
+            "operation": "plot_function_2d",
+            "applied_count": 0,
+            "created_element_ids": [],
+            "failed_operations": [{"element_id": None, "reason": f"invalid expression: {expression}"}],
+        }
     fn = lambdify(var_x, expr, "math")
 
     points: list[dict[str, float]] = []
@@ -382,6 +463,13 @@ async def plot_function_2d(
         operation="draw_freehand",
         payload={
             "points": points,
+            "render_mode": "polyline",
+            "graph_clip": {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+            },
             "style": {
                 "stroke_color": stroke_color,
                 "stroke_width": stroke_width,

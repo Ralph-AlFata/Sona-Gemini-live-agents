@@ -124,6 +124,8 @@ def _build_freehand_element(payload: DrawFreehandPayload) -> tuple[dict, BBox]:
     max_y = max(ys)
     draw_payload = {
         "points": [point.model_dump() for point in payload.points],
+        "render_mode": payload.render_mode,
+        "graph_clip": payload.graph_clip.model_dump() if payload.graph_clip is not None else None,
         "style": _style_to_dict(payload.style),
     }
     return draw_payload, BBox(min_x, min_y, max(max_x - min_x, 0.001), max(max_y - min_y, 0.001))
