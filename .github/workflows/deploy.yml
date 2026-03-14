@@ -1,0 +1,26 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy all services
+        run: bash infra/deploy.sh
+        env:
+          PROJECT_ID: project-c3019c85-4428-4c46-9c2
+          REGION: us-central1
+          BUCKET: sona-canvases-your-suffix

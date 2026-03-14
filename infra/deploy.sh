@@ -8,7 +8,7 @@ set -euo pipefail
 # ─── Config ───────────────────────────────────────────────────────────────────
 PROJECT_ID="${PROJECT_ID:-project-c3019c85-4428-4c46-9c2}"
 REGION="${REGION:-us-central1}"
-BUCKET="${BUCKET:-sona-canvases-${PROJECT_ID}}"
+BUCKET="${BUCKET:-sona-canvases-your-suffix}"
 
 SESS_SERVICE="sona-session"
 DRAW_SERVICE="sona-drawing"
