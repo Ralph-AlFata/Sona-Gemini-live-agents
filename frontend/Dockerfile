@@ -3,13 +3,24 @@
 # ─── Stage 1: builder ────────────────────────────────────────────────────────
 FROM node:20-alpine AS builder
 
+# Declare build args — passed via --build-arg in CI or gcloud run deploy
+ARG VITE_FIREBASE_API_KEY
+ARG VITE_SESSION_HTTP_BASE
+ARG VITE_DRAWING_HTTP_BASE
+ARG VITE_ORCHESTRATOR_WS_BASE
+ARG VITE_DRAWING_WS_BASE
+
+ENV VITE_FIREBASE_API_KEY=$VITE_FIREBASE_API_KEY
+ENV VITE_SESSION_HTTP_BASE=$VITE_SESSION_HTTP_BASE
+ENV VITE_DRAWING_HTTP_BASE=$VITE_DRAWING_HTTP_BASE
+ENV VITE_ORCHESTRATOR_WS_BASE=$VITE_ORCHESTRATOR_WS_BASE
+ENV VITE_DRAWING_WS_BASE=$VITE_DRAWING_WS_BASE
+
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
 RUN npm install
 
-# .env.production is included in the build context (see .dockerignore)
-# Vite reads it automatically during `npm run build`
 COPY . .
 RUN npm run build
 

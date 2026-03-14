@@ -82,7 +82,13 @@ jobs:
       # ── Frontend ─────────────────────────────────────────────────────────────
       - name: Build and push frontend
         run: |
-          docker build -t $REGISTRY/sona-frontend:$GITHUB_SHA ./frontend
+          docker build \
+            --build-arg VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }} \
+            --build-arg VITE_SESSION_HTTP_BASE=${{ secrets.VITE_SESSION_HTTP_BASE }} \
+            --build-arg VITE_DRAWING_HTTP_BASE=${{ secrets.VITE_DRAWING_HTTP_BASE }} \
+            --build-arg VITE_DRAWING_WS_BASE=${{ secrets.VITE_DRAWING_WS_BASE }} \
+            --build-arg VITE_ORCHESTRATOR_WS_BASE=${{ secrets.VITE_ORCHESTRATOR_WS_BASE }} \
+            -t $REGISTRY/sona-frontend:$GITHUB_SHA ./frontend
           docker push $REGISTRY/sona-frontend:$GITHUB_SHA
 
       - name: Deploy frontend
