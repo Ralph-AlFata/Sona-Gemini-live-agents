@@ -32,9 +32,19 @@ let onStatusCallback: OnStatus | null = null;
 let intentionalClose = false;
 
 function getWsUrl(sessionId: string, authToken: string | null): string {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const host = window.location.host;
-  const base = `${protocol}//${host}/ws/drawing/${sessionId}`;
+  // In production, VITE_DRAWING_WS_BASE points directly to the drawing service
+  // (e.g. "wss://sona-drawing-xxx-uc.a.run.app"). In dev it falls back to the
+  // Vite proxy on the same host ("/ws/drawing/<id>").
+  const drawingWsBase = import.meta.env.VITE_DRAWING_WS_BASE as string | undefined;
+  let base: string;
+  if (drawingWsBase) {
+    // Strip trailing slash, then append the WS path
+    base = `${drawingWsBase.replace(/\/$/, "")}/ws/${sessionId}`;
+  } else {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.host;
+    base = `${protocol}//${host}/ws/drawing/${sessionId}`;
+  }
   if (!authToken) return base;
   return `${base}?auth_token=${encodeURIComponent(authToken)}`;
 }
