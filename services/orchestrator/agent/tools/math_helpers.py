@@ -13,6 +13,17 @@ from agent.tools.core import shape_to_points
 _DEFAULT_PLOT_COLOR = "#e74c3c"
 _DEFAULT_PLOT_LABEL_FONT_SIZE = 14
 _DEFAULT_PLOT_LABEL_OFFSET = 0.025
+_GRAPH_VIEWPORT_STATE_KEY = "active_graph_viewport"
+_DEFAULT_GRAPH_VIEWPORT = {
+    "x": 0.1,
+    "y": 0.05,
+    "width": 0.8,
+    "height": 0.45,
+    "domain_min": -10.0,
+    "domain_max": 10.0,
+    "y_min": -10.0,
+    "y_max": 10.0,
+}
 
 
 async def draw_axes_grid(
@@ -40,18 +51,21 @@ async def draw_axes_grid(
         raise ValueError("y_max must be greater than y_min")
 
     grid_lines = max(2, min(30, grid_lines))
+    viewport = {
+        "x": max(0.0, min(1.0, x)),
+        "y": max(0.0, min(2.0, y)),
+        "width": max(0.001, min(1.0, width)),
+        "height": max(0.001, min(2.0, height)),
+        "domain_min": domain_min,
+        "domain_max": domain_max,
+        "y_min": y_min,
+        "y_max": y_max,
+    }
     result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="set_graph_viewport",
         payload={
-            "x": max(0.0, min(1.0, x)),
-            "y": max(0.0, min(2.0, y)),
-            "width": max(0.001, min(1.0, width)),
-            "height": max(0.001, min(2.0, height)),
-            "domain_min": domain_min,
-            "domain_max": domain_max,
-            "y_min": y_min,
-            "y_max": y_max,
+            **viewport,
             "grid_lines": grid_lines,
             "show_border": True,
             "border_color": "#444444",
@@ -62,6 +76,7 @@ async def draw_axes_grid(
             "grid_opacity": 0.5,
         },
     )
+    _store_graph_viewport(tool_context, viewport)
 
     return {
         "status": "success",
@@ -161,6 +176,51 @@ def _format_equation_label(expression: str) -> str:
     return " ".join(label.split())
 
 
+def _store_graph_viewport(tool_context: ToolContext | None, viewport: dict[str, float]) -> None:
+    if tool_context is None:
+        return
+    tool_context.state[_GRAPH_VIEWPORT_STATE_KEY] = viewport
+
+
+def _resolve_graph_viewport(
+    tool_context: ToolContext | None,
+    *,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    domain_min: float,
+    domain_max: float,
+    y_min: float,
+    y_max: float,
+) -> dict[str, float]:
+    requested = {
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "domain_min": domain_min,
+        "domain_max": domain_max,
+        "y_min": y_min,
+        "y_max": y_max,
+    }
+    if tool_context is None:
+        return requested
+
+    stored = tool_context.state.get(_GRAPH_VIEWPORT_STATE_KEY)
+    if not isinstance(stored, dict):
+        return requested
+
+    uses_defaults = all(requested[key] == _DEFAULT_GRAPH_VIEWPORT[key] for key in _DEFAULT_GRAPH_VIEWPORT)
+    if not uses_defaults:
+        return requested
+
+    return {
+        key: float(stored.get(key, _DEFAULT_GRAPH_VIEWPORT[key]))
+        for key in _DEFAULT_GRAPH_VIEWPORT
+    }
+
+
 def _compute_plot_label_position(
     points: list[dict[str, float]],
     *,
@@ -231,6 +291,25 @@ async def plot_function_2d(
     if y_max <= y_min:
         raise ValueError("y_max must be greater than y_min")
     samples = max(20, min(1000, samples))
+    viewport = _resolve_graph_viewport(
+        tool_context,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+        domain_min=domain_min,
+        domain_max=domain_max,
+        y_min=y_min,
+        y_max=y_max,
+    )
+    x = viewport["x"]
+    y = viewport["y"]
+    width = viewport["width"]
+    height = viewport["height"]
+    domain_min = viewport["domain_min"]
+    domain_max = viewport["domain_max"]
+    y_min = viewport["y_min"]
+    y_max = viewport["y_max"]
 
     var_x = Symbol("x")
     expr = sympify(expression)

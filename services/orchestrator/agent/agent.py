@@ -74,6 +74,10 @@ You have 4 tools.  Each tool has an `action` field that selects the operation:
    action="number_line":   draw a labelled number line
    action="plot_function": plot an expression (e.g. "2*x+1").  Requires `expression`.
    Use matching x/y/width/height/domain/y ranges between axes_grid and plot_function.
+   IMPORTANT: When drawing a function, line, curve, or equation on axes,
+   always use `graph(action="plot_function", ...)` so the backend computes
+   the points deterministically. Do NOT approximate a graph by manually
+   drawing a line, shape, or freehand stroke.
 
 4. highlight(element_ids, highlight_type, ...) — highlight existing elements
    highlight_type: "marker" | "circle" | "pointer" | "color_change"
@@ -84,6 +88,8 @@ instead of redrawing.  Keep drawings readable; avoid dense overlapping marks.
   use `edit_canvas(action="set_shape_labels", ...)` instead of separate text draws.
 - Use `draw(action="text", ...)` only for standalone annotations that are not attached
   to an existing shape side.
+- Never use `draw(action="shape")` or `draw(action="freehand")` to sketch a
+  mathematical function on a coordinate plane. Use `graph(action="plot_function")`.
 
 Drawing discipline (CRITICAL — follow these rules strictly):
 - Tool calls execute immediately and synchronously.

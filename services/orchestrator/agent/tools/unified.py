@@ -65,8 +65,10 @@ async def draw(
                    "triangle", "circle") and `points` (list of {x, y}).
                    Optional `labels` maps by index to the shape's sides, so
                    the system places side labels automatically.
+                   Do NOT use this to plot mathematical functions on axes.
       "text"     — place a text label.  Requires `text`, `x`, `y`.
       "freehand" — draw a freehand stroke.  Requires `points`.
+                   Do NOT use this to plot mathematical functions on axes.
 
     Style parameters (stroke_color, stroke_width, fill_color, opacity,
     z_index, delay_ms, animate) apply to all actions.
@@ -291,7 +293,8 @@ async def graph(
     axes_grid and plot_function so curves align with the grid.
 
     Invocation condition: Call axes_grid ONCE per graph.  Call plot_function
-    ONCE per expression.  Do not redraw if already on the canvas.
+    ONCE per expression.  Do not redraw if already on the canvas. Use
+    plot_function, not draw(shape/freehand), for any function or curve on axes.
     """
     if action == "axes_grid":
         return await _draw_axes_grid(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
@@ -221,6 +223,39 @@ async def test_plot_function_uses_default_color_when_none_specified(
     )
 
     assert _fake_client.calls[0]["payload"]["style"]["stroke_color"] == "#e74c3c"
+
+
+@pytest.mark.asyncio
+async def test_plot_function_reuses_last_axes_grid_viewport(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    tool_context = SimpleNamespace(state={"session_id": "s_test"})
+
+    await math_helpers.draw_axes_grid(
+        x=0.2,
+        y=0.1,
+        width=0.6,
+        height=0.4,
+        domain_min=0,
+        domain_max=6.28,
+        y_min=-2,
+        y_max=2,
+        tool_context=tool_context,
+    )
+    _fake_client.calls.clear()
+
+    result = await math_helpers.plot_function_2d(
+        expression="cos(x)",
+        tool_context=tool_context,
+    )
+
+    assert result["status"] == "success"
+    assert _fake_client.calls[0]["operation"] == "draw_freehand"
+    first_point = _fake_client.calls[0]["payload"]["points"][0]
+    last_point = _fake_client.calls[0]["payload"]["points"][-1]
+    assert first_point["x"] == pytest.approx(0.2, abs=1e-6)
+    assert last_point["x"] == pytest.approx(0.8, abs=1e-3)
 
 
 @pytest.mark.asyncio
