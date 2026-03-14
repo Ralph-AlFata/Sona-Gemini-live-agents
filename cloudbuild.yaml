@@ -12,7 +12,7 @@ steps:
       - --port=8003
       - --allow-unauthenticated
       - --service-account=sona-session-sa@$PROJECT_ID.iam.gserviceaccount.com
-      - --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,USE_FIRESTORE=true,FIRESTORE_DATABASE=(default),GCS_BUCKET=sona-canvases-$PROJECT_ID,SESSION_AUTH_ENABLED=true
+      - --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,USE_FIRESTORE=true,FIRESTORE_DATABASE=(default),GCS_BUCKET=sona-canvases-your-suffix,SESSION_AUTH_ENABLED=true
 
   # ─── 2. Drawing service ─────────────────────────────────────────────────────
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
