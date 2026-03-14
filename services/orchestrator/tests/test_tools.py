@@ -21,7 +21,9 @@ class _FakeClient:
         operation: str,
         payload: dict,
         command_id: str | None = None,
+        auth_token: str | None = None,
     ) -> DrawingCommandResult:
+        _ = auth_token
         self._counter += 1
         created_ids = []
         if operation in {"draw_shape", "draw_text", "draw_freehand"}:

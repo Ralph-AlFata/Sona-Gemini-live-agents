@@ -21,7 +21,7 @@ from google.cloud import firestore  # type: ignore[import-untyped]
 from google.cloud.firestore_v1.async_client import AsyncClient  # type: ignore[import-untyped]
 
 from gcp_auth import load_auth_config
-from models import CanvasSnapshot, ConversationTurn, Session, SessionCreate
+from models import CanvasSnapshot, ConversationTurn, Session, SessionCreate, SessionElement
 
 logger = logging.getLogger(__name__)
 
@@ -492,6 +492,7 @@ async def create_session(payload: SessionCreate) -> Session:
     """Create a new session summary document in Firestore."""
     client = get_firestore_client()
     session_id = payload.session_id or uuid4().hex
+    student_id = payload.student_id or f"student_{uuid4().hex[:8]}"
     doc_ref = _session_doc_ref(client, session_id)
     existing = await doc_ref.get()
     if existing.exists:
@@ -499,11 +500,15 @@ async def create_session(payload: SessionCreate) -> Session:
         existing_session = await get_session(session_id)
         if existing_session is None:
             raise ValueError(f"Session {session_id!r} exists but could not be loaded")
+        if existing_session.student_id != student_id:
+            raise PermissionError(
+                f"Session {session_id!r} is owned by a different student_id"
+            )
         return existing_session
 
     session = Session(
         session_id=session_id,
-        student_id=payload.student_id,
+        student_id=student_id,
         topic=payload.topic,
         turn_count=0,
         last_turn_at=None,
@@ -529,6 +534,70 @@ async def get_session(session_id: str) -> Session | None:
         summary_raw=summary_raw,
         turns_raw=turns_raw,
     )
+
+
+async def list_sessions_for_student(student_id: str) -> list[Session]:
+    """List summary sessions for one student, newest first."""
+    client = get_firestore_client()
+    sessions: list[Session] = []
+
+    query = client.collection(COLLECTION_NAME).where("student_id", "==", student_id)
+    async for snapshot in query.stream():
+        summary_raw: dict[str, object] = snapshot.to_dict() or {}
+        try:
+            session = _build_session_from_summary(
+                session_id=snapshot.id,
+                summary_raw=summary_raw,
+                turns_raw=[],
+            )
+        except Exception:
+            logger.exception(
+                "Failed to parse session summary for student=%s session_id=%s",
+                student_id,
+                snapshot.id,
+            )
+            continue
+        sessions.append(session)
+
+    sessions.sort(key=lambda item: item.updated_at, reverse=True)
+    return sessions
+
+
+async def list_session_elements(session_id: str) -> list[SessionElement]:
+    """List materialized elements for one session."""
+    client = get_firestore_client()
+    result: list[SessionElement] = []
+    async for snapshot in _elements_col_ref(client, session_id).stream():
+        raw: dict[str, object] = snapshot.to_dict() or {}
+        item = {
+            "element_id": (
+                str(raw.get("element_id"))
+                if isinstance(raw.get("element_id"), str)
+                else snapshot.id
+            ),
+            "element_type": (
+                str(raw.get("element_type"))
+                if isinstance(raw.get("element_type"), str)
+                else "unknown"
+            ),
+            "payload": raw.get("payload") if isinstance(raw.get("payload"), dict) else {},
+            "bbox": raw.get("bbox") if isinstance(raw.get("bbox"), dict) else None,
+            "updated_at": raw.get("updated_at") if isinstance(raw.get("updated_at"), str) else None,
+            "last_message_id": (
+                raw.get("last_message_id")
+                if isinstance(raw.get("last_message_id"), str)
+                else None
+            ),
+            "last_message_type": (
+                raw.get("last_message_type")
+                if isinstance(raw.get("last_message_type"), str)
+                else None
+            ),
+            "session_id": raw.get("session_id") if isinstance(raw.get("session_id"), str) else session_id,
+        }
+        result.append(SessionElement.model_validate(item))
+    result.sort(key=lambda item: item.updated_at or "", reverse=False)
+    return result
 
 
 async def append_turn(session_id: str, turn: ConversationTurn) -> Session:
@@ -568,6 +637,24 @@ async def append_turn(session_id: str, turn: ConversationTurn) -> Session:
     updated = await get_session(session_id)
     if updated is None:
         raise ValueError(f"Session {session_id!r} not found after append_turn write")
+    return updated
+
+
+async def update_session_topic(session_id: str, topic: str) -> Session:
+    """Update session topic/name and return the refreshed session."""
+    client = get_firestore_client()
+    doc_ref = _session_doc_ref(client, session_id)
+
+    await doc_ref.update(
+        {
+            "topic": topic,
+            "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+        }
+    )
+
+    updated = await get_session(session_id)
+    if updated is None:
+        raise ValueError(f"Session {session_id!r} not found after update_session_topic write")
     return updated
 
 

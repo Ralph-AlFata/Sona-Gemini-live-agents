@@ -30,6 +30,7 @@ async def test_create_session_posts_expected_payload() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         captured["path"] = request.url.path
         captured["body"] = request.read().decode()
+        captured["auth"] = request.headers.get("authorization", "")
         return httpx.Response(
             status_code=201,
             json={
@@ -54,11 +55,13 @@ async def test_create_session_posts_expected_payload() -> None:
     await client.create_session(
         session_id="dev-session",
         student_id="demo-user",
+        auth_token="token-abc",
     )
 
     assert captured["path"] == "/sessions"
     assert "\"session_id\":\"dev-session\"" in captured["body"]
     assert "\"student_id\":\"demo-user\"" in captured["body"]
+    assert captured["auth"] == "Bearer token-abc"
     await client.close()
 
 

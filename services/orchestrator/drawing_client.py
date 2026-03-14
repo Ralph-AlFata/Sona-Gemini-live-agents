@@ -27,8 +27,20 @@ class DrawingClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def execute(self, session_id: str, operation: str, payload: dict, command_id: str | None = None) -> DrawingCommandResult:
+    async def execute(
+        self,
+        session_id: str,
+        operation: str,
+        payload: dict,
+        command_id: str | None = None,
+        auth_token: str | None = None,
+    ) -> DrawingCommandResult:
         cid = command_id or uuid4().hex[:12]
+        headers = (
+            {"Authorization": f"Bearer {auth_token}"}
+            if isinstance(auth_token, str) and auth_token
+            else None
+        )
         response = await self._client.post(
             "/draw",
             json={
@@ -37,6 +49,7 @@ class DrawingClient:
                 "session_id": session_id,
                 "payload": payload,
             },
+            headers=headers,
         )
         response.raise_for_status()
         body = response.json()

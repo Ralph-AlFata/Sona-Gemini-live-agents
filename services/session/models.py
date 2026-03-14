@@ -97,14 +97,27 @@ class SessionCreate(_StrictBase):
         max_length=120,
         description="Optional caller-supplied session identifier",
     )
-    student_id: str = Field(
-        default_factory=lambda: f"student_{uuid4().hex[:8]}",
-        description="Caller-supplied or auto-generated student identifier",
+    student_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional student identifier. "
+            "Ignored when SESSION_AUTH_ENABLED=true (derived from token claims)."
+        ),
     )
     topic: str | None = Field(
         default=None,
         max_length=120,
         description="Optional initial topic hint (e.g. 'Pythagorean theorem')",
+    )
+
+
+class SessionRename(_StrictBase):
+    """Request body for PATCH /sessions/{session_id}."""
+
+    topic: str = Field(
+        min_length=1,
+        max_length=120,
+        description="Human-readable session name shown in the frontend session switcher.",
     )
 
 
@@ -221,6 +234,19 @@ class SnapshotUploadResponse(_StrictBase):
 
     session_id: str
     snapshot: CanvasSnapshot
+
+
+class SessionElement(_StrictBase):
+    """Materialized element row under sessions/{session_id}/elements."""
+
+    element_id: str
+    element_type: str
+    payload: dict[str, object] = Field(default_factory=dict)
+    bbox: dict[str, float] | None = None
+    updated_at: str | None = None
+    last_message_id: str | None = None
+    last_message_type: str | None = None
+    session_id: str | None = None
 
 
 class HealthResponse(_StrictBase):

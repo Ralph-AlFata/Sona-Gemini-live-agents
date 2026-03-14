@@ -12,7 +12,6 @@ import {
 import { startAudioPlayerWorklet } from "../services/audio-player";
 import { startAudioRecorderWorklet, stopMicrophone } from "../services/audio-recorder";
 
-const USER_ID = "demo-user";
 const MAX_TURNS = 80;
 
 interface LiveTurn {
@@ -22,7 +21,9 @@ interface LiveTurn {
 }
 
 interface ChatPanelProps {
+  userId: string;
   sessionId: string;
+  authToken: string;
 }
 
 async function readFileAsDataUrl(file: File): Promise<string> {
@@ -62,7 +63,7 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-export function ChatPanel({ sessionId }: ChatPanelProps) {
+export function ChatPanel({ userId, sessionId, authToken }: ChatPanelProps) {
   const [status, setStatus] = useState<LiveConnectionStatus>("disconnected");
   const [turns, setTurns] = useState<LiveTurn[]>([]);
   const [audioEnabled, setAudioEnabled] = useState(false);
@@ -115,8 +116,9 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
   useEffect(() => {
     connectLive(
-      USER_ID,
+      userId,
       sessionId,
+      authToken,
       { proactivity, affectiveDialog },
       handleEvent,
       setStatus,
@@ -125,7 +127,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     return () => {
       disconnectLive();
     };
-  }, [affectiveDialog, handleEvent, proactivity, sessionId]);
+  }, [affectiveDialog, authToken, handleEvent, proactivity, sessionId, userId]);
 
   async function startAudio(): Promise<void> {
     if (audioEnabled) return;

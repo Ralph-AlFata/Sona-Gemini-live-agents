@@ -22,8 +22,22 @@ class SessionServiceClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def get_session(self, session_id: str) -> dict[str, Any] | None:
-        response = await self._client.get(f"/sessions/{session_id}")
+    @staticmethod
+    def _auth_headers(auth_token: str | None) -> dict[str, str] | None:
+        if isinstance(auth_token, str) and auth_token:
+            return {"Authorization": f"Bearer {auth_token}"}
+        return None
+
+    async def get_session(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+    ) -> dict[str, Any] | None:
+        response = await self._client.get(
+            f"/sessions/{session_id}",
+            headers=self._auth_headers(auth_token),
+        )
         if response.status_code == 404:
             return None
         response.raise_for_status()
@@ -35,13 +49,18 @@ class SessionServiceClient:
         session_id: str,
         student_id: str,
         topic: str | None = None,
+        auth_token: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "session_id": session_id,
             "student_id": student_id,
             "topic": topic,
         }
-        response = await self._client.post("/sessions", json=payload)
+        response = await self._client.post(
+            "/sessions",
+            json=payload,
+            headers=self._auth_headers(auth_token),
+        )
         response.raise_for_status()
         return response.json()
 
@@ -52,6 +71,7 @@ class SessionServiceClient:
         role: Literal["student", "sona"],
         content: str,
         metadata: dict[str, Any] | None = None,
+        auth_token: str | None = None,
     ) -> dict[str, Any]:
         response = await self._client.post(
             f"/sessions/{session_id}/turns",
@@ -60,6 +80,7 @@ class SessionServiceClient:
                 "content": content,
                 "metadata": metadata,
             },
+            headers=self._auth_headers(auth_token),
         )
         response.raise_for_status()
         return response.json()

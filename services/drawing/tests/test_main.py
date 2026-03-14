@@ -180,3 +180,116 @@ def test_websocket_receives_graph_viewport_message() -> None:
             assert msg["version"] == "2.0"
             assert msg["session_id"] == "graph-room"
             assert msg["type"] == "graph_viewport_set"
+
+
+def test_get_session_state_returns_element_created_messages() -> None:
+    with TestClient(main.app) as client:
+        created = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_state",
+                "session_id": "state-room",
+                "operation": "draw_text",
+                "payload": {
+                    "text": "state hydrate",
+                    "x": 0.25,
+                    "y": 0.35,
+                    "font_size": 22,
+                    "style": {"stroke_color": "#222222"},
+                },
+            },
+        )
+        assert created.status_code == 200
+
+        state = client.get("/sessions/state-room/state")
+        assert state.status_code == 200
+        body = state.json()
+        assert body["session_id"] == "state-room"
+        assert body["element_count"] == 1
+        assert len(body["dsl_messages"]) == 1
+
+        msg = body["dsl_messages"][0]
+        assert msg["type"] == "element_created"
+        assert msg["payload"]["element_type"] == "text"
+        assert msg["payload"]["payload"]["text"] == "state hydrate"
+        assert msg["payload"]["payload"]["color"] == "#222222"
+
+
+def test_get_session_elements_returns_direct_snapshots() -> None:
+    with TestClient(main.app) as client:
+        created = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_elements",
+                "session_id": "elements-room",
+                "operation": "draw_text",
+                "payload": {
+                    "text": "hydrate directly",
+                    "x": 0.2,
+                    "y": 0.3,
+                    "font_size": 20,
+                    "style": {"stroke_color": "#333333"},
+                },
+            },
+        )
+        assert created.status_code == 200
+
+        response = client.get("/sessions/elements-room/elements")
+        assert response.status_code == 200
+        body = response.json()
+        assert isinstance(body, list)
+        assert len(body) == 1
+        row = body[0]
+        assert row["session_id"] == "elements-room"
+        assert row["element_type"] == "text"
+        assert row["payload"]["text"] == "hydrate directly"
+        assert row["payload"]["color"] == "#333333"
+
+
+def test_get_session_state_sorts_by_layer_order() -> None:
+    with TestClient(main.app) as client:
+        high_layer = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_state_layer_high",
+                "session_id": "state-layer-room",
+                "element_id": "el_high",
+                "operation": "draw_text",
+                "payload": {
+                    "text": "top-layer",
+                    "x": 0.25,
+                    "y": 0.35,
+                    "font_size": 22,
+                    "style": {"stroke_color": "#111111", "z_index": 10},
+                },
+            },
+        )
+        assert high_layer.status_code == 200
+
+        low_layer = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_state_layer_low",
+                "session_id": "state-layer-room",
+                "element_id": "el_low",
+                "operation": "draw_text",
+                "payload": {
+                    "text": "low-layer",
+                    "x": 0.35,
+                    "y": 0.45,
+                    "font_size": 22,
+                    "style": {"stroke_color": "#222222", "z_index": 0},
+                },
+            },
+        )
+        assert low_layer.status_code == 200
+
+        state = client.get("/sessions/state-layer-room/state")
+        assert state.status_code == 200
+        body = state.json()
+        texts = [
+            msg["payload"]["payload"]["text"]
+            for msg in body["dsl_messages"]
+            if msg.get("type") == "element_created"
+        ]
+        assert texts == ["low-layer", "top-layer"]

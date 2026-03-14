@@ -27,6 +27,7 @@ import os
 
 from google.cloud.firestore_v1.async_client import AsyncClient  # type: ignore[import-untyped]
 
+from config import settings
 from gcp_auth import load_auth_config
 from store import BBox, StoredElement
 
@@ -44,12 +45,19 @@ ELEMENT_SUBCOLLECTION = "elements"
 def init_firestore_client() -> AsyncClient:
     """Instantiate and store the Firestore AsyncClient. Called once during lifespan startup."""
     global _firestore_client
-    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+    project_id = (
+        os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+        or settings.google_cloud_project.strip()
+    )
     if not project_id:
         raise RuntimeError(
             "GOOGLE_CLOUD_PROJECT is required when USE_FIRESTORE=true"
         )
-    database_id = os.environ.get("FIRESTORE_DATABASE", "(default)")
+    database_id = (
+        os.environ.get("FIRESTORE_DATABASE", "").strip()
+        or settings.firestore_database
+        or "(default)"
+    )
     auth = load_auth_config()
 
     _firestore_client = AsyncClient(
