@@ -66,6 +66,10 @@ async def draw(
 ) -> dict:
     """Create a new visual element on the canvas.
 
+    REQUIRED: always pass `action` explicitly.
+    Invalid: `draw(shape="triangle")`
+    Valid: `draw(action="shape", shape="triangle")`
+
     action must be one of:
       "shape"    — draw a geometric shape. Requires `shape`. Use either:
                    - automatic placement: omit `points`, optionally pass
@@ -73,6 +77,13 @@ async def draw(
                    - manual placement: provide `points`.
                    Optional `labels` maps by index to the shape's sides.
                    Do NOT use this to plot mathematical functions on axes.
+                   Important shape distinction:
+                   - `shape="triangle"` means a generic isosceles triangle.
+                   - `shape="right_triangle"` means a triangle with a 90-degree angle.
+                   - If the student asks for a right triangle, use `right_triangle`,
+                     not `triangle`.
+                   - If the right angle must be in a particular corner, use manual
+                     `points` so the orientation is exact.
       "text"     — place text. Requires `text`. Omit `x` and `y` for automatic
                    placement, or provide both for manual placement.
       "freehand" — draw a freehand stroke.  Requires `points`.
@@ -87,6 +98,14 @@ async def draw(
     Invocation condition: Call ONLY to create a NEW element that does not
     already exist on the canvas.  Never repeat a call whose previous
     response already returned a created_element_id.
+
+    Common mistakes to avoid:
+    - Do not omit `action`.
+    - Do not use `shape="triangle"` for a right-triangle diagram.
+    - Do not call `draw(action="text", ...)` when you meant to label an
+      existing shape side; use `edit_canvas(action="set_shape_labels", ...)`.
+    - After a successful create call, read `created_element_ids` from the
+      response and reuse those exact IDs in later edit calls.
     """
     if action == "shape":
         if shape is None:
@@ -182,6 +201,10 @@ async def edit_canvas(
 ) -> dict:
     """Modify or remove existing canvas elements.
 
+    REQUIRED: always pass `action` explicitly.
+    REQUIRED: only pass `element_id` / `element_ids` that came from an
+    earlier tool response. Never guess IDs.
+
     action must be one of:
       "delete"        — remove elements by ID.  Requires `element_ids`.
       "erase"         — erase everything in a region.  Requires `x`, `y`,
@@ -205,6 +228,14 @@ async def edit_canvas(
 
     Invocation condition: Only call when you need to change something that
     already exists.  Do not repeat a call with identical parameters.
+
+    Common mistakes to avoid:
+    - Do not invent IDs like `shape_4`. Use only IDs returned in
+      `created_element_ids`.
+    - If a previous edit call reported `element not found`, do not retry the
+      same call unchanged.
+    - If the shape has not been created yet, create it first with `draw(...)`
+      and only then call `edit_canvas(...)` using the returned ID.
     """
     if action == "delete":
         if not element_ids:
@@ -355,6 +386,8 @@ async def graph(
 ) -> dict:
     """Create mathematical graphs and plots on the canvas.
 
+    REQUIRED: always pass `action` explicitly.
+
     action must be one of:
       "axes_grid"     — set up a graph viewport with axes and grid lines.
                          Omit `x`/`y` to auto-place at cursor; use `next`
@@ -372,6 +405,10 @@ async def graph(
     Invocation condition: Call axes_grid ONCE per graph.  Call plot_function
     ONCE per expression.  Do not redraw if already on the canvas. Use
     plot_function, not draw(shape/freehand), for any function or curve on axes.
+
+    Common mistakes to avoid:
+    - Do not omit `action`.
+    - Do not use `draw` to approximate a graph or plotted line.
     """
     if action == "axes_grid":
         return await _draw_axes_grid(
