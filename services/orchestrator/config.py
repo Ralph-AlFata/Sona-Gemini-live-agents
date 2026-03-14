@@ -7,7 +7,12 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_ROOT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+_SERVICE_DIR = Path(__file__).resolve().parent
+# Collect candidate .env paths without assuming directory depth (safe in Docker)
+_candidate_env_files: list[str] = [
+    str(_SERVICE_DIR.parent.parent / ".env"),
+    str(_SERVICE_DIR / ".env"),
+]
 
 
 class Settings(BaseSettings):
@@ -30,7 +35,7 @@ class Settings(BaseSettings):
     orchestrator_auth_audience: str = ""
 
     model_config = SettingsConfigDict(
-        env_file=(str(_ROOT_ENV_FILE), ".env"),
+        env_file=tuple(_candidate_env_files),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",

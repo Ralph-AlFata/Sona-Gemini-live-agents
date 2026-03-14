@@ -8,6 +8,8 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
 
+# .env.production is included in the build context (see .dockerignore)
+# Vite reads it automatically during `npm run build`
 COPY . .
 RUN npm run build
 
