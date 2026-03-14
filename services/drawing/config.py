@@ -6,7 +6,12 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_ROOT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+_SERVICE_DIR = Path(__file__).resolve().parent
+# Walk up looking for a root .env (dev convenience). In Docker /app has no parent .env
+# so we collect only paths that actually exist to avoid IndexError.
+_candidate_env_files: list[str] = []
+for _p in (_SERVICE_DIR.parent.parent / ".env", _SERVICE_DIR / ".env"):
+    _candidate_env_files.append(str(_p))  # pydantic-settings ignores missing files
 
 
 class Settings(BaseSettings):
@@ -22,7 +27,7 @@ class Settings(BaseSettings):
     session_service_url: str = "http://session:8003"
 
     model_config = SettingsConfigDict(
-        env_file=(str(_ROOT_ENV_FILE), ".env"),
+        env_file=tuple(_candidate_env_files),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
