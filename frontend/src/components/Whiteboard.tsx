@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Stage, Layer, Rect, Text, Line, Shape } from "react-konva";
 import type { Stage as KonvaStage } from "konva/lib/Stage";
 import type { DSLMessageRaw } from "../services/drawingSocket";
+import { sendCanvasMetrics } from "../services/orchestratorLive";
 import { postDraw, type SessionElementSnapshot } from "../services/drawingService";
 import getStroke from "perfect-freehand";
 
@@ -803,6 +804,12 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
       window.removeEventListener("resize", updateSize);
     };
   }, []);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    if (dimensions.width <= 0 || dimensions.height <= 0) return;
+    sendCanvasMetrics(dimensions.width, dimensions.height);
+  }, [dimensions.height, dimensions.width, sessionId]);
 
   useEffect(() => {
     unmountedRef.current = false;

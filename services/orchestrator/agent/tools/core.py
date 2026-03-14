@@ -2,10 +2,30 @@
 
 from __future__ import annotations
 
+import math
+
 from google.adk.tools import ToolContext
 
+from agent.tools._cursor import BBox, LEFT_MARGIN, RIGHT_EDGE
+from agent.tools._cursor_store import clear_cursor, get_cursor
 from agent.tools._shared import execute_tool_command, resolve_session_id, result_to_dict
+from agent.tools._trace import emit_draw_trace
 from agent.tools.models import DrawFreehandInput, DrawShapeInput, DrawTextInput, HighlightInput
+
+_AUTO_SHAPE_DEFAULT_WIDTH = 0.25
+_VALID_NEXT_DIRECTIONS = {"below", "right", "left", "below_all"}
+_MAX_AUTO_SHAPE_WIDTH = max(0.1, RIGHT_EDGE - LEFT_MARGIN)
+_MAX_AUTO_SHAPE_HEIGHT = 2.0
+_SUPPORTED_SHAPES = {
+    "rectangle",
+    "ellipse",
+    "circle",
+    "line",
+    "triangle",
+    "right_triangle",
+    "polygon",
+    "square",
+}
 
 
 def shape_to_points(
@@ -99,9 +119,82 @@ def shape_to_points(
     return []
 
 
+def _estimate_text_size(text: str, font_size: int) -> tuple[float, float]:
+    width = min(0.8, 0.012 * len(text) * (font_size / 24))
+    height = min(0.25, 0.03 * (font_size / 24))
+    return width, height
+
+
+def _points_bbox(points: list[dict[str, float]]) -> dict[str, float]:
+    min_x = min(point["x"] for point in points)
+    max_x = max(point["x"] for point in points)
+    min_y = min(point["y"] for point in points)
+    max_y = max(point["y"] for point in points)
+    return {
+        "x": round(min_x, 4),
+        "y": round(min_y, 4),
+        "width": round(max_x - min_x, 4),
+        "height": round(max_y - min_y, 4),
+    }
+
+
+def _normalize_auto_shape_size(width: float, height: float) -> tuple[float, float, bool]:
+    """
+    Normalize potentially pixel/percent-like dimensions to canvas units.
+
+    Returns (normalized_width, normalized_height, changed).
+    """
+    w = max(width, 0.001)
+    h = max(height, 0.001)
+    if w <= _MAX_AUTO_SHAPE_WIDTH and h <= _MAX_AUTO_SHAPE_HEIGHT:
+        return w, h, False
+
+    for factor in (0.01, 0.001, 0.1):
+        scaled_w = w * factor
+        scaled_h = h * factor
+        if scaled_w <= _MAX_AUTO_SHAPE_WIDTH and scaled_h <= _MAX_AUTO_SHAPE_HEIGHT:
+            return max(0.02, scaled_w), max(0.02, scaled_h), True
+
+    scale = max(
+        w / _MAX_AUTO_SHAPE_WIDTH,
+        h / _MAX_AUTO_SHAPE_HEIGHT,
+        1.0,
+    )
+    normalized_w = max(0.02, min(_MAX_AUTO_SHAPE_WIDTH, w / scale))
+    normalized_h = max(0.02, min(_MAX_AUTO_SHAPE_HEIGHT, h / scale))
+    return normalized_w, normalized_h, True
+
+
+def _clamp_points_to_canvas(
+    raw_points: list[dict[str, float]],
+) -> tuple[list[dict[str, float]], bool]:
+    """Clamp points into normalized canvas bounds [0,1]x[0,2]."""
+    clamped: list[dict[str, float]] = []
+    changed = False
+
+    for point in raw_points:
+        x_raw = point.get("x")
+        y_raw = point.get("y")
+        if not isinstance(x_raw, (int, float)) or not isinstance(y_raw, (int, float)):
+            return raw_points, False
+
+        x = float(x_raw)
+        y = float(y_raw)
+        nx = min(1.0, max(0.0, x))
+        ny = min(2.0, max(0.0, y))
+        if nx != x or ny != y:
+            changed = True
+        clamped.append({"x": nx, "y": ny})
+
+    return clamped, changed
+
+
 async def draw_shape(
     shape: str,
-    points: list[dict[str, float]],
+    points: list[dict[str, float]] | None = None,
+    width: float | None = None,
+    height: float | None = None,
+    next: str = "below",
     labels: list[str] | None = None,
     stroke_color: str = "#111111",
     stroke_width: float = 2.0,
@@ -113,20 +206,16 @@ async def draw_shape(
     tool_context: ToolContext | None = None,
 ) -> dict:
     """
-    Draw a shape on the canvas using explicit vertex points.
+    Draw a shape on the canvas.
 
-    `shape` is a rendering hint for the frontend. `points` is a list of
-    {x, y} dicts in normalised [0, 1] coordinates. At least 2 points are
-    required. For closed shapes, repeat the first point at the end.
+    Two placement modes:
+    - AUTOMATIC (recommended): Omit `points`. Optionally provide `width` and
+      `height`; otherwise sensible defaults are used. The shape is placed at
+      the current cursor and the cursor advances.
+    - MANUAL: Provide explicit `points`. The cursor is not moved.
 
-    Common shapes and their point counts:
-    - line:           2 pts
-    - rectangle:      5 pts (closed: first == last)
-    - square:         5 pts (closed, equal sides)
-    - triangle:       4 pts (closed isoceles)
-    - right_triangle: 4 pts (right angle at bottom-left, closed)
-    - ellipse:        49 pts (48 segments + closing point)
-    - polygon:        6 pts (regular 5-gon + closing point)
+    `next` controls cursor flow after automatic placement:
+    "below" (default), "right", "left", or "below_all".
 
     Invocation condition: Call ONLY when you need to draw a NEW shape that
     does not already exist on the canvas. Never call with the same shape
@@ -137,10 +226,50 @@ async def draw_shape(
     `labels[1]` labels the segment from `points[1]` to `points[2]`, etc.
     Use empty strings to skip sides you do not want to label.
     """
+    if next not in _VALID_NEXT_DIRECTIONS:
+        raise ValueError(f"next must be one of {sorted(_VALID_NEXT_DIRECTIONS)}")
+
+    session_id = resolve_session_id(tool_context)
+    used_cursor = False
+    cursor = None
+    normalized_shape_size = False
+    normalized_points = False
+
+    if points is None:
+        if shape not in _SUPPORTED_SHAPES:
+            raise ValueError(f"unsupported shape '{shape}'")
+        if width is not None and width <= 0:
+            raise ValueError("width must be greater than 0")
+        if height is not None and height <= 0:
+            raise ValueError("height must be greater than 0")
+        cursor = get_cursor(session_id)
+        auto_width = _AUTO_SHAPE_DEFAULT_WIDTH if width is None else width
+        auto_height = auto_width if height is None else height
+        auto_width, auto_height, normalized_shape_size = _normalize_auto_shape_size(
+            auto_width,
+            auto_height,
+        )
+        bbox = cursor.place(auto_width, auto_height, next_direction=next)
+        points = shape_to_points(shape, bbox.x, bbox.y, bbox.width, bbox.height)
+        if not points:
+            return {
+                "status": "error",
+                "operation": "draw_shape",
+                "message": f"cannot auto-generate points for shape '{shape}'",
+            }
+        width = auto_width
+        height = auto_height
+        used_cursor = True
+    else:
+        points, normalized_points = _clamp_points_to_canvas(points)
+
     data = DrawShapeInput.model_validate(
         {
             "shape": shape,
             "points": points,
+            "width": width,
+            "height": height,
+            "next": next,
             "labels": labels or [],
             "style": {
                 "stroke_color": stroke_color,
@@ -153,11 +282,10 @@ async def draw_shape(
             },
         }
     )
-    session_id = resolve_session_id(tool_context)
     result = await execute_tool_command(
         session_id=session_id,
         operation="draw_shape",
-        payload=data.model_dump(mode="json", exclude={"labels"}),
+        payload=data.model_dump(mode="json", exclude={"labels", "width", "height", "next"}),
     )
     response = result_to_dict(result)
     shape_id = result.created_element_ids[0] if result.created_element_ids else None
@@ -180,13 +308,31 @@ async def draw_shape(
 
     response["shape_id"] = shape_id
     response["label_ids"] = label_ids
+    response["element_bbox"] = _points_bbox(
+        [
+            {"x": point.x, "y": point.y}
+            for point in data.points
+        ]
+    )
+    if used_cursor and cursor is not None:
+        response["cursor_after"] = cursor.to_dict()
+        emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
+    if normalized_shape_size:
+        response["placement_warning"] = (
+            "Shape width/height were auto-normalized to canvas coordinates."
+        )
+    if normalized_points:
+        response["points_warning"] = (
+            "Some shape points were clamped into canvas bounds."
+        )
     return response
 
 
 async def draw_text(
     text: str,
-    x: float,
-    y: float,
+    x: float | None = None,
+    y: float | None = None,
+    next: str = "below",
     font_size: int = 24,
     stroke_color: str = "#111111",
     stroke_width: float = 2.0,
@@ -199,14 +345,40 @@ async def draw_text(
 ) -> dict:
     """Place text on the canvas.
 
-    Invocation condition: Call ONLY when placing NEW text not already on the
-    canvas. Do not re-place text that already has a confirmed element ID.
+    Two placement modes:
+    - AUTOMATIC (recommended): Omit `x` and `y`; text is placed at the current
+      cursor and the cursor advances.
+    - MANUAL: Provide explicit `x` and `y`; cursor is not moved.
     """
+    if next not in _VALID_NEXT_DIRECTIONS:
+        raise ValueError(f"next must be one of {sorted(_VALID_NEXT_DIRECTIONS)}")
+
+    session_id = resolve_session_id(tool_context)
+    used_cursor = False
+    cursor = None
+    normalized_partial_coords = False
+
+    # LLMs sometimes emit only one coordinate. Normalize that to automatic
+    # placement instead of failing the whole live turn.
+    if (x is None) != (y is None):
+        x = None
+        y = None
+        normalized_partial_coords = True
+
+    if x is None and y is None:
+        cursor = get_cursor(session_id)
+        text_width, text_height = _estimate_text_size(text, font_size)
+        bbox = cursor.place(text_width, text_height, next_direction=next)
+        x = bbox.x
+        y = bbox.y
+        used_cursor = True
+
     data = DrawTextInput.model_validate(
         {
             "text": text,
             "x": x,
             "y": y,
+            "next": next,
             "font_size": font_size,
             "style": {
                 "stroke_color": stroke_color,
@@ -220,15 +392,31 @@ async def draw_text(
         }
     )
     result = await execute_tool_command(
-        session_id=resolve_session_id(tool_context),
+        session_id=session_id,
         operation="draw_text",
-        payload=data.model_dump(mode="json"),
+        payload=data.model_dump(mode="json", exclude={"next"}),
     )
-    return result_to_dict(result)
+    response = result_to_dict(result)
+    text_width, text_height = _estimate_text_size(text, font_size)
+    response["element_bbox"] = {
+        "x": round(data.x if data.x is not None else 0.0, 4),
+        "y": round(data.y if data.y is not None else 0.0, 4),
+        "width": round(text_width, 4),
+        "height": round(text_height, 4),
+    }
+    if used_cursor and cursor is not None:
+        response["cursor_after"] = cursor.to_dict()
+        emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
+    if normalized_partial_coords:
+        response["placement_warning"] = (
+            "Partial text coordinates were ignored; used automatic cursor placement."
+        )
+    return response
 
 
 async def draw_freehand(
     points: list[dict[str, float]],
+    next: str = "below",
     stroke_color: str = "#111111",
     stroke_width: float = 2.0,
     fill_color: str | None = None,
@@ -243,9 +431,14 @@ async def draw_freehand(
     Invocation condition: Call ONLY for NEW freehand strokes. Do not redraw
     a stroke that already has a confirmed element ID.
     """
+    if next not in _VALID_NEXT_DIRECTIONS:
+        raise ValueError(f"next must be one of {sorted(_VALID_NEXT_DIRECTIONS)}")
+
+    session_id = resolve_session_id(tool_context)
     data = DrawFreehandInput.model_validate(
         {
             "points": points,
+            "next": next,
             "style": {
                 "stroke_color": stroke_color,
                 "stroke_width": stroke_width,
@@ -258,11 +451,29 @@ async def draw_freehand(
         }
     )
     result = await execute_tool_command(
-        session_id=resolve_session_id(tool_context),
+        session_id=session_id,
         operation="draw_freehand",
-        payload=data.model_dump(mode="json"),
+        payload=data.model_dump(mode="json", exclude={"next"}),
     )
-    return result_to_dict(result)
+    response = result_to_dict(result)
+    bbox_payload = _points_bbox(
+        [
+            {"x": point.x, "y": point.y}
+            for point in data.points
+        ]
+    )
+    bbox = BBox(
+        x=bbox_payload["x"],
+        y=bbox_payload["y"],
+        width=bbox_payload["width"],
+        height=bbox_payload["height"],
+    )
+    cursor = get_cursor(session_id)
+    cursor.advance_from_bbox(bbox, next_direction=next)
+    response["cursor_after"] = cursor.to_dict()
+    response["element_bbox"] = bbox_payload
+    emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
+    return response
 
 
 async def highlight_region(
@@ -316,9 +527,15 @@ async def highlight_region(
 
 
 async def clear_canvas(tool_context: ToolContext | None = None) -> dict:
+    session_id = resolve_session_id(tool_context)
+    clear_cursor(session_id)
+    cursor = get_cursor(session_id)
+    emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
     result = await execute_tool_command(
-        session_id=resolve_session_id(tool_context),
+        session_id=session_id,
         operation="clear_canvas",
         payload={"mode": "full"},
     )
-    return result_to_dict(result)
+    response = result_to_dict(result)
+    response["cursor_after"] = cursor.to_dict()
+    return response

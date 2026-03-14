@@ -36,6 +36,42 @@ def test_extract_dsl_messages_from_metadata_collects_all_known_containers() -> N
     assert [msg["id"] for msg in extracted] == ["msg00001", "msg00002"]
 
 
+def test_extract_cursor_state_from_metadata_accepts_numeric_fields() -> None:
+    metadata: dict[str, object] = {
+        "cursor_state": {
+            "x": 0.12,
+            "y": 0.2,
+            "row_start_x": 0.06,
+            "row_start_y": 0.03,
+            "row_max_bottom": 0.27,
+            "column_max_right": 0.41,
+        }
+    }
+
+    extracted = fs._extract_cursor_state_from_metadata(metadata)
+
+    assert extracted == {
+        "x": 0.12,
+        "y": 0.2,
+        "row_start_x": 0.06,
+        "row_start_y": 0.03,
+        "row_max_bottom": 0.27,
+        "column_max_right": 0.41,
+    }
+
+
+def test_extract_cursor_state_from_metadata_ignores_invalid_payload() -> None:
+    metadata: dict[str, object] = {
+        "cursor_state": {
+            "x": "bad",
+            "y": None,
+        }
+    }
+
+    extracted = fs._extract_cursor_state_from_metadata(metadata)
+    assert extracted is None
+
+
 def test_apply_dsl_messages_tracks_create_transform_restyle_delete() -> None:
     elements_by_id: dict[str, dict[str, object]] = {}
 

@@ -2,7 +2,7 @@
 Firestore async client and session CRUD operations.
 
 Collection layout:
-    sessions/{session_id}                → Session summary document
+    sessions/{session_id}                → Session summary document (includes cursor_state)
     sessions/{session_id}/turns/{turn_id} → ConversationTurn documents
     sessions/{session_id}/elements/{element_id} → Materialized per-element docs
 
@@ -122,6 +122,28 @@ def _extract_dsl_messages_from_metadata(
                 dsl_messages.extend(item for item in nested if isinstance(item, dict))
 
     return dsl_messages
+
+
+def _extract_cursor_state_from_metadata(
+    metadata: dict[str, object] | None,
+) -> dict[str, float] | None:
+    """Extract the latest cursor snapshot persisted by orchestrator tool traces."""
+    if not isinstance(metadata, dict):
+        return None
+    raw_cursor = metadata.get("cursor_state")
+    if not isinstance(raw_cursor, dict):
+        return None
+
+    cursor_state: dict[str, float] = {}
+    for key, value in raw_cursor.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, (int, float)):
+            cursor_state[key] = float(value)
+
+    if not cursor_state:
+        return None
+    return cursor_state
 
 
 def _coerce_float(value: object) -> float | None:
@@ -610,16 +632,20 @@ async def append_turn(session_id: str, turn: ConversationTurn) -> Session:
     turn_ref = _turns_col_ref(client, session_id).document(turn.turn_id)
     now_iso = datetime.now(tz=timezone.utc).isoformat()
     turn_ts_iso = turn.timestamp.isoformat()
+    cursor_state = _extract_cursor_state_from_metadata(turn.metadata)
 
     batch = client.batch()
     batch.set(turn_ref, turn.to_firestore_dict())
+    summary_update: dict[str, object] = {
+        "updated_at": now_iso,
+        "turn_count": firestore.Increment(1),
+        "last_turn_at": turn_ts_iso,
+    }
+    if cursor_state is not None:
+        summary_update["cursor_state"] = cursor_state
     batch.update(
         session_ref,
-        {
-            "updated_at": now_iso,
-            "turn_count": firestore.Increment(1),
-            "last_turn_at": turn_ts_iso,
-        },
+        summary_update,
     )
     await batch.commit()
 

@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+NextDirection = Literal["below", "right", "left", "below_all"]
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -32,8 +34,9 @@ class DrawShapeInput(_StrictModel):
 
     `shape` is a rendering hint (e.g. "rectangle", "line", "triangle",
     "right_triangle", "ellipse", "polygon", "square").
-    `points` are explicit vertex coordinates in normalised [0, 1] space.
-    Lines need 2 points; closed shapes should repeat the first point at the end.
+    Two modes are supported:
+    - manual placement with explicit `points`
+    - cursor placement with `width`/`height` (points generated server-side)
     """
 
     shape: Literal[
@@ -46,12 +49,22 @@ class DrawShapeInput(_StrictModel):
         "polygon",
         "square",
     ]
-    points: list[PointInput] = Field(min_length=2)
+    points: list[PointInput] | None = Field(default=None, min_length=2)
+    width: float | None = Field(default=None, gt=0.0, le=1.0)
+    height: float | None = Field(default=None, gt=0.0, le=2.0)
+    next: NextDirection = "below"
     labels: list[str] = Field(default_factory=list, max_length=64)
     style: ToolStyle = Field(default_factory=ToolStyle)
 
     @model_validator(mode="after")
     def _validate_labels(self) -> "DrawShapeInput":
+        if self.points is None:
+            if self.width is None:
+                raise ValueError("provide 'points' or 'width' for shape placement")
+            if self.labels:
+                raise ValueError("labels require explicit shape points")
+            return self
+
         if not self.labels:
             return self
 
@@ -68,14 +81,24 @@ class DrawShapeInput(_StrictModel):
 
 class DrawTextInput(_StrictModel):
     text: str = Field(min_length=1, max_length=2_000)
-    x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=2.0)
+    x: float | None = Field(default=None, ge=0.0, le=1.0)
+    y: float | None = Field(default=None, ge=0.0, le=2.0)
+    next: NextDirection = "below"
     font_size: int = Field(default=24, ge=8, le=256)
     style: ToolStyle = Field(default_factory=ToolStyle)
+
+    @model_validator(mode="after")
+    def _validate_text_coords(self) -> "DrawTextInput":
+        has_x = self.x is not None
+        has_y = self.y is not None
+        if has_x != has_y:
+            raise ValueError("x and y must be both provided or both omitted")
+        return self
 
 
 class DrawFreehandInput(_StrictModel):
     points: list[PointInput] = Field(min_length=2)
+    next: NextDirection = "below"
     style: ToolStyle = Field(default_factory=ToolStyle)
 
 

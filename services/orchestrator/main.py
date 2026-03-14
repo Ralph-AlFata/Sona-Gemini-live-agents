@@ -23,6 +23,10 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from agent.tools._cursor_store import (
+    set_cursor as set_cursor_from_snapshot,
+    update_cursor_viewport,
+)
 from agent.tools._trace import draw_trace_span
 from agent.tools._auth import auth_token_span
 from agent import root_agent
@@ -232,17 +236,34 @@ async def _ensure_persisted_session(
     auth_token: str | None = None,
 ) -> None:
     """Ensure the Firestore-backed session document exists in the session service."""
+    def _hydrate_cursor_from_session(payload: dict[str, Any] | None) -> None:
+        if not isinstance(payload, dict):
+            return
+        raw_cursor_state = payload.get("cursor_state")
+        if not isinstance(raw_cursor_state, dict):
+            return
+        try:
+            set_cursor_from_snapshot(session_id, raw_cursor_state)
+        except Exception:
+            logger.exception(
+                "LIVE_CURSOR_HYDRATE_FAILED session_id=%s payload=%s",
+                session_id,
+                raw_cursor_state,
+            )
+
     existing = await runtime.session_client.get_session(
         session_id,
         auth_token=auth_token,
     )
     if existing is not None:
+        _hydrate_cursor_from_session(existing)
         return
-    await runtime.session_client.create_session(
+    created = await runtime.session_client.create_session(
         session_id=session_id,
         student_id=user_id,
         auth_token=auth_token,
     )
+    _hydrate_cursor_from_session(created)
 
 
 def _extract_finished_transcription(raw_value: Any) -> str | None:
@@ -410,7 +431,7 @@ async def websocket_endpoint(
     persist_lock = asyncio.Lock()
     pending_persist_tasks: set[asyncio.Task[None]] = set()
     persisted_turn_keys: set[tuple[int, Literal["student", "sona"], str]] = set()
-    turn_draw_activity: dict[int, dict[str, list[dict[str, Any]]]] = {}
+    turn_draw_activity: dict[int, dict[str, Any]] = {}
 
     def _track_persist_task(task: asyncio.Task[None]) -> None:
         pending_persist_tasks.add(task)
@@ -492,6 +513,7 @@ async def websocket_endpoint(
             {
                 "draw_command_requests": [],
                 "dsl_messages": [],
+                "cursor_state": None,
             },
         )
         command_request = event.get("draw_command_request")
@@ -502,6 +524,9 @@ async def websocket_endpoint(
             activity["dsl_messages"].extend(
                 item for item in dsl_messages if isinstance(item, dict)
             )
+        cursor_state = event.get("cursor_state")
+        if isinstance(cursor_state, dict):
+            activity["cursor_state"] = dict(cursor_state)
 
     async def stop_current_turn(reason: str, wait_for_drain: bool = True) -> None:
         nonlocal live_request_queue, live_task
@@ -596,6 +621,7 @@ async def websocket_endpoint(
                                 and (
                                     draw_activity["draw_command_requests"]
                                     or draw_activity["dsl_messages"]
+                                    or isinstance(draw_activity.get("cursor_state"), dict)
                                 )
                                 else None
                             )
@@ -807,6 +833,42 @@ async def websocket_endpoint(
                     buffered_audio_chunks.clear()
                     buffered_audio_bytes = 0
                     logger.info("LIVE_ACTIVITY_END session_id=%s", session_id)
+
+                elif msg_type == "canvas_metrics":
+                    width_raw = json_message.get("canvas_width_px")
+                    height_raw = json_message.get("canvas_height_px")
+                    try:
+                        width = float(width_raw)
+                        height = float(height_raw)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "LIVE_CANVAS_METRICS_INVALID session_id=%s width=%r height=%r",
+                            session_id,
+                            width_raw,
+                            height_raw,
+                        )
+                        continue
+                    try:
+                        cursor = update_cursor_viewport(
+                            session_id,
+                            canvas_width_px=width,
+                            canvas_height_px=height,
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "LIVE_CANVAS_METRICS_REJECTED session_id=%s width=%s height=%s",
+                            session_id,
+                            width,
+                            height,
+                        )
+                        continue
+                    logger.info(
+                        "LIVE_CANVAS_METRICS session_id=%s width_px=%s height_px=%s bottom_edge=%s",
+                        session_id,
+                        int(width),
+                        int(height),
+                        cursor.to_snapshot_dict().get("bottom_edge"),
+                    )
 
     try:
         await upstream_task()

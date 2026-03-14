@@ -2,7 +2,7 @@
 Pydantic v2 models for the Sona Session Service.
 
 Session document structure in Firestore:
-    sessions/{session_id} → summary document (status, timestamps, latest snapshot)
+    sessions/{session_id} → summary document (status, timestamps, latest snapshot, cursor_state)
     sessions/{session_id}/turns/{turn_id} → ConversationTurn document
 """
 
@@ -138,6 +138,7 @@ class Session(_StrictBase):
     last_turn_at: datetime | None = None
     turns: list[ConversationTurn] = Field(default_factory=list)
     latest_snapshot: CanvasSnapshot | None = None
+    cursor_state: dict[str, float] | None = None
 
     def to_firestore_dict(self) -> dict[str, object]:
         return {
@@ -159,6 +160,7 @@ class Session(_StrictBase):
                 if self.latest_snapshot
                 else None
             ),
+            "cursor_state": self.cursor_state,
         }
 
     def to_firestore_summary_dict(self) -> dict[str, object]:
@@ -181,6 +183,7 @@ class Session(_StrictBase):
                 if self.latest_snapshot
                 else None
             ),
+            "cursor_state": self.cursor_state,
         }
 
     @classmethod
@@ -201,6 +204,18 @@ class Session(_StrictBase):
                 return None
             return _to_dt(val)
 
+        cursor_state_raw = data.get("cursor_state")
+        cursor_state: dict[str, float] | None = None
+        if isinstance(cursor_state_raw, dict):
+            candidate: dict[str, float] = {}
+            for key, value in cursor_state_raw.items():
+                if not isinstance(key, str):
+                    continue
+                if isinstance(value, (int, float)):
+                    candidate[key] = float(value)
+            if candidate:
+                cursor_state = candidate
+
         return cls(
             session_id=str(data["session_id"]),
             student_id=str(data["student_id"]),
@@ -216,6 +231,7 @@ class Session(_StrictBase):
                 if snapshot_raw
                 else None
             ),
+            cursor_state=cursor_state,
         )
 
 
