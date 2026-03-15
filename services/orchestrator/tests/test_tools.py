@@ -901,6 +901,77 @@ async def test_unified_move_cursor_missing_coords_returns_error_not_exception() 
     assert response["cursor_after"]["y"] == pytest.approx(0.03, abs=1e-3)
 
 
+@pytest.mark.asyncio
+async def test_canvas_actions_executes_multiple_actions_in_order(_fake_client: _FakeClient) -> None:
+    context = SimpleNamespace(state={"session_id": "s_canvas_actions"})
+
+    response = await unified.canvas_actions(
+        actions=[
+            {"tool": "draw", "action": "text", "text": "First"},
+            {"tool": "edit_canvas", "action": "new_line"},
+            {"tool": "draw", "action": "text", "text": "Second"},
+        ],
+        tool_context=context,
+    )
+
+    assert response["status"] == "success"
+    assert response["completed_actions"] == 3
+    assert response["failed_action_index"] is None
+    assert response["stopped_early"] is False
+    assert [result["operation"] for result in response["results"]] == [
+        "draw_text",
+        "edit_canvas",
+        "draw_text",
+    ]
+    assert [call["operation"] for call in _fake_client.calls] == [
+        "draw_text",
+        "draw_text",
+    ]
+    assert _fake_client.calls[1]["payload"]["y"] > _fake_client.calls[0]["payload"]["y"]
+
+
+@pytest.mark.asyncio
+async def test_canvas_actions_accepts_stringified_action_objects(_fake_client: _FakeClient) -> None:
+    context = SimpleNamespace(state={"session_id": "s_canvas_actions_strings"})
+
+    response = await unified.canvas_actions(
+        actions=[
+            '{"tool":"draw","action":"shape","shape":"right_triangle","labels":["a","b","c"]}',
+            '{"tool":"draw","action":"text","text":"a² + b² = c²","next":"below_all"}',
+        ],
+        tool_context=context,
+    )
+
+    assert response["status"] == "success"
+    assert response["completed_actions"] == 2
+    assert [call["operation"] for call in _fake_client.calls] == [
+        "draw_shape",
+        "set_shape_labels",
+        "draw_text",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_canvas_actions_stops_on_error_result(_fake_client: _FakeClient) -> None:
+    context = SimpleNamespace(state={"session_id": "s_canvas_actions_error"})
+
+    response = await unified.canvas_actions(
+        actions=[
+            {"tool": "draw", "action": "text", "text": "Before error"},
+            {"tool": "edit_canvas", "action": "move_cursor", "x": 0.4},
+            {"tool": "draw", "action": "text", "text": "Should not run"},
+        ],
+        tool_context=context,
+    )
+
+    assert response["status"] == "partial_success"
+    assert response["completed_actions"] == 2
+    assert response["failed_action_index"] == 1
+    assert response["stopped_early"] is True
+    assert response["results"][1]["status"] == "error"
+    assert len(_fake_client.calls) == 1
+
+
 def test_update_cursor_viewport_sets_dynamic_bottom_edge() -> None:
     state = _cursor_store.update_cursor_viewport(
         "s_cursor_viewport",

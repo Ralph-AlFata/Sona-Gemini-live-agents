@@ -13,11 +13,13 @@ from agent.tools.editing import (
 )
 from agent.tools.math_helpers import draw_axes_grid, draw_number_line, plot_function_2d
 
-# Unified tools registered with the ADK agent (4 instead of 14).
-from agent.tools.unified import draw, edit_canvas, graph, highlight
+# Unified tools plus the single agent-facing batch dispatcher.
+from agent.tools.unified import canvas_actions, draw, edit_canvas, graph, highlight
 
 __all__ = [
-    # Unified (registered with agent)
+    # Agent-facing batch tool
+    "canvas_actions",
+    # Unified building blocks
     "draw",
     "edit_canvas",
     "graph",
