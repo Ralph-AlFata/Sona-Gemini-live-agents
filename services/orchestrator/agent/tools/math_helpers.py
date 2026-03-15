@@ -17,7 +17,7 @@ from agent.tools._cursor import LEFT_MARGIN, RIGHT_EDGE
 from agent.tools._cursor_store import get_cursor
 from agent.tools._shared import execute_tool_command, resolve_session_id, result_to_dict
 from agent.tools._trace import emit_draw_trace
-from agent.tools.core import shape_to_points
+from agent.tools.core import highlight_region, shape_to_points
 
 logger = logging.getLogger(__name__)
 
@@ -543,3 +543,70 @@ async def plot_function_2d(
         "label_element_ids": label_result.created_element_ids,
         "plot_summary": f"Plotted {label_text} in {stroke_color}.",
     }
+
+
+def _fmt_coord(v: float) -> str:
+    """Format a coordinate value: integer if whole, 2dp otherwise."""
+    return str(int(v)) if v == int(v) else f"{v:.2f}"
+
+
+async def mark_graph_intersection(
+    math_x: float,
+    math_y: float,
+    label: str | None = None,
+    stroke_color: str = "rgba(220,50,50,0.9)",
+    stroke_width: float = 2.5,
+    padding: float = 0.018,
+    tool_context: ToolContext | None = None,
+) -> dict:
+    """Place an X marker at a math-space point on the active graph.
+
+    Reads the stored graph viewport from tool_context.state and converts
+    (math_x, math_y) to canvas coordinates automatically.
+    If label is omitted, defaults to "(math_x, math_y)".
+    """
+    if tool_context is None:
+        return {
+            "status": "error",
+            "operation": "mark_graph_intersection",
+            "applied_count": 0,
+            "created_element_ids": [],
+            "failed_operations": [{"error": "tool_context is required"}],
+        }
+
+    vp = tool_context.state.get(_GRAPH_VIEWPORT_STATE_KEY)
+    if not isinstance(vp, dict):
+        return {
+            "status": "error",
+            "operation": "mark_graph_intersection",
+            "applied_count": 0,
+            "created_element_ids": [],
+            "failed_operations": [{"error": "No active graph viewport. Call draw_axes_grid first."}],
+        }
+
+    gx = float(vp["x"])
+    gy = float(vp["y"])
+    gw = float(vp["width"])
+    gh = float(vp["height"])
+    domain_min = float(vp["domain_min"])
+    domain_max = float(vp["domain_max"])
+    y_min = float(vp["y_min"])
+    y_max = float(vp["y_max"])
+
+    t = (math_x - domain_min) / (domain_max - domain_min)
+    nx = max(0.0, min(1.0, gx + t * gw))
+    ny = max(0.0, min(2.0, gy + (y_max - math_y) / (y_max - y_min) * gh))
+
+    auto_label = label if label else f"({_fmt_coord(math_x)}, {_fmt_coord(math_y)})"
+
+    return await highlight_region(
+        element_ids=[],
+        highlight_type="x_marker",
+        point_x=nx,
+        point_y=ny,
+        label=auto_label,
+        stroke_color=stroke_color,
+        stroke_width=stroke_width,
+        padding=padding,
+        tool_context=tool_context,
+    )

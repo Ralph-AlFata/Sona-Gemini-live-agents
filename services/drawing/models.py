@@ -106,12 +106,27 @@ class HighlightPayload(_StrictBase):
     - "pointer"     — ellipse outline + arrow pointing at the region
     - "color_change"— updates the stroke/fill color of the target elements
                       directly (no new element is created)
+    - "x_marker"   — two crossed diagonal lines at an explicit (point_x, point_y)
+                      coordinate, used to mark an intersection or specific point
     """
 
-    element_ids: list[str] = Field(min_length=1, max_length=50)
-    highlight_type: Literal["marker", "circle", "pointer", "color_change"] = "marker"
+    element_ids: list[str] = Field(default_factory=list, max_length=50)
+    highlight_type: Literal["marker", "circle", "pointer", "color_change", "x_marker"] = "marker"
     padding: float = Field(default=0.02, ge=0.0, le=0.1)
     style: StylePayload = Field(default_factory=StylePayload)
+    point_x: float | None = Field(default=None, ge=0.0, le=1.0)
+    point_y: float | None = Field(default=None, ge=0.0, le=2.0)
+    label: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def _validate_for_type(self) -> "HighlightPayload":
+        if self.highlight_type == "x_marker":
+            if self.point_x is None or self.point_y is None:
+                raise ValueError("x_marker requires point_x and point_y")
+        else:
+            if not self.element_ids:
+                raise ValueError(f"{self.highlight_type} requires at least one element_id")
+        return self
 
 
 class ClearPayload(_StrictBase):

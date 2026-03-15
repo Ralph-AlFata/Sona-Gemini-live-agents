@@ -557,7 +557,7 @@ async def draw_freehand(
 
 
 async def highlight_region(
-    element_ids: list[str],
+    element_ids: list[str] | None = None,
     highlight_type: str = "marker",
     padding: float = 0.02,
     stroke_color: str = "rgba(255,255,0,0.8)",
@@ -567,6 +567,9 @@ async def highlight_region(
     z_index: int = 0,
     delay_ms: int = 30,
     animate: bool = True,
+    point_x: float | None = None,
+    point_y: float | None = None,
+    label: str | None = None,
     tool_context: ToolContext | None = None,
 ) -> dict:
     """
@@ -578,13 +581,15 @@ async def highlight_region(
     - "circle"       — ellipse outline
     - "pointer"      — ellipse + arrow beneath
     - "color_change" — applies stroke_color/fill_color to the target elements
+    - "x_marker"     — two crossed diagonal lines at (point_x, point_y);
+                       element_ids may be empty, point_x and point_y are required
 
     Invocation condition: Call ONLY when highlighting elements not already
     highlighted. Do not re-highlight the same element_ids with the same type.
     """
     data = HighlightInput.model_validate(
         {
-            "element_ids": element_ids,
+            "element_ids": element_ids or [],
             "highlight_type": highlight_type,
             "padding": padding,
             "style": {
@@ -596,6 +601,9 @@ async def highlight_region(
                 "delay_ms": delay_ms,
                 "animate": animate,
             },
+            "point_x": point_x,
+            "point_y": point_y,
+            "label": label,
         }
     )
     result = await execute_tool_command(

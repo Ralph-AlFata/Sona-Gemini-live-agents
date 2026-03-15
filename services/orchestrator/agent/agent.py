@@ -120,17 +120,27 @@ Action reference for `canvas_actions`:
      when `shape_4` was never returned by a tool response.
 
 3. `{"tool":"graph","action":...}` — mathematical graphing
-   action="axes_grid":     set up graph viewport with grid + axes
-   action="number_line":   draw a labelled number line
-   action="plot_function": plot an expression (e.g. "2*x+1").  Requires `expression`.
+   action="axes_grid":        set up graph viewport with grid + axes
+   action="number_line":      draw a labelled number line
+   action="plot_function":    plot an expression (e.g. "2*x+1").  Requires `expression`.
+   action="mark_intersection": place an X marker at a math-space intersection point.
+                               Requires `math_x` and `math_y` (real math coordinates,
+                               NOT canvas coordinates). The backend converts them
+                               automatically. Optional `stroke_color`.
+                               Use this whenever marking where two lines/curves meet.
    Use matching x/y/width/height/domain/y ranges between axes_grid and plot_function.
    IMPORTANT: When drawing a function, line, curve, or equation on axes,
    always use `{"tool":"graph","action":"plot_function", ...}` so the backend computes
    the points deterministically. Do NOT approximate a graph by manually
    drawing a line, shape, or freehand stroke.
+   IMPORTANT: When marking an intersection on a graph, always use
+   `{"tool":"graph","action":"mark_intersection","math_x":...,"math_y":...}`.
+   Never use `highlight x_marker` with manual canvas coordinates for graph intersections.
 
 4. `{"tool":"highlight", ...}` — highlight existing elements
-   highlight_type: "marker" | "circle" | "pointer" | "color_change"
+   highlight_type: "marker" | "circle" | "pointer" | "color_change" | "x_marker"
+   "x_marker" is for non-graph use only (e.g. marking a point on a plain diagram).
+   For graph intersections, use `{"tool":"graph","action":"mark_intersection"}` instead.
 
 When correcting mistakes, use edit_canvas (delete/move/resize/update_style/update_points)
 instead of redrawing.  Keep drawings readable; avoid dense overlapping marks.

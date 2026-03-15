@@ -34,6 +34,7 @@ from agent.tools.editing import (
 from agent.tools.math_helpers import (
     draw_axes_grid as _draw_axes_grid,
     draw_number_line as _draw_number_line,
+    mark_graph_intersection as _mark_graph_intersection,
     plot_function_2d as _plot_function_2d,
 )
 
@@ -390,6 +391,10 @@ async def graph(
     samples: int = 200,
     stroke_color: str = "#e74c3c",
     stroke_width: float = 2.5,
+    # mark_intersection specific
+    math_x: float | None = None,
+    math_y: float | None = None,
+    label: str | None = None,
     tool_context: ToolContext | None = None,
 ) -> dict:
     """Create mathematical graphs and plots on the canvas.
@@ -397,15 +402,24 @@ async def graph(
     REQUIRED: always pass `action` explicitly.
 
     action must be one of:
-      "axes_grid"     — set up a graph viewport with axes and grid lines.
-                         Omit `x`/`y` to auto-place at cursor; use `next`
-                         to control cursor flow after placement.
-      "number_line"   — draw a number line with ticks and labels.
-                         Requires `x`, `y`, `width`.
-      "plot_function" — plot a mathematical expression (e.g. "2*x + 1").
-                         Requires `expression`. Optional `stroke_color`
-                         controls the plotted line color. The equation label
-                         is placed automatically near the visible line.
+      "axes_grid"          — set up a graph viewport with axes and grid lines.
+                             Omit `x`/`y` to auto-place at cursor; use `next`
+                             to control cursor flow after placement.
+      "number_line"        — draw a number line with ticks and labels.
+                             Requires `x`, `y`, `width`.
+      "plot_function"      — plot a mathematical expression (e.g. "2*x + 1").
+                             Requires `expression`. Optional `stroke_color`
+                             controls the plotted line color. The equation label
+                             is placed automatically near the visible line.
+      "mark_intersection"  — place an X marker + "(x, y)" label at a math-space
+                             point on the active graph. Requires `math_x` and
+                             `math_y` (the real mathematical coordinates of the
+                             intersection). The backend converts them to canvas
+                             coordinates automatically using the stored viewport.
+                             Optional `label` overrides the auto-generated text.
+                             Optional `stroke_color` controls the marker color.
+                             ALWAYS use this (not highlight x_marker directly)
+                             when marking intersection points on a graph.
 
     Use matching x/y/width/height/domain_min/domain_max/y_min/y_max between
     axes_grid and plot_function so curves align with the grid.
@@ -417,6 +431,8 @@ async def graph(
     Common mistakes to avoid:
     - Do not omit `action`.
     - Do not use `draw` to approximate a graph or plotted line.
+    - Do not use `highlight x_marker` for intersection points on a graph —
+      use `mark_intersection` instead so coordinates are converted correctly.
     """
     if action == "axes_grid":
         if (x is None) != (y is None):
@@ -467,8 +483,20 @@ async def graph(
             tool_context=tool_context,
         )
 
+    if action == "mark_intersection":
+        if math_x is None or math_y is None:
+            raise ValueError("action='mark_intersection' requires 'math_x' and 'math_y'")
+        return await _mark_graph_intersection(
+            math_x=math_x,
+            math_y=math_y,
+            label=label,
+            stroke_color=stroke_color,
+            stroke_width=stroke_width,
+            tool_context=tool_context,
+        )
+
     raise ValueError(
-        f"graph: unknown action '{action}'. Must be 'axes_grid', 'number_line', or 'plot_function'."
+        f"graph: unknown action '{action}'. Must be 'axes_grid', 'number_line', 'plot_function', or 'mark_intersection'."
     )
 
 

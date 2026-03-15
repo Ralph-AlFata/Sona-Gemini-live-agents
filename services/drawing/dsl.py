@@ -658,7 +658,97 @@ async def apply_command(
             DrawCommandFailure(element_id=eid, reason="element not found") for eid in not_found
         )
 
-        if target_elements:
+        if payload.highlight_type == "x_marker":
+            px: float = payload.point_x  # type: ignore[assignment]  # validated non-None
+            py: float = payload.point_y  # type: ignore[assignment]
+            arm = max(payload.padding, 0.015)
+            style_dict = _style_to_dict(payload.style)
+            line_defs = [
+                ("line1", [{"x": px - arm, "y": py - arm}, {"x": px + arm, "y": py + arm}]),
+                ("line2", [{"x": px + arm, "y": py - arm}, {"x": px - arm, "y": py + arm}]),
+            ]
+            for part, pts in line_defs:
+                eid = _next_element_id()
+                el = StoredElement(
+                    element_id=eid,
+                    element_type="freehand",
+                    payload={
+                        "points": pts,
+                        "style": style_dict,
+                        "highlight_kind": "x_marker",
+                        "highlight_part": part,
+                        "target_element_ids": payload.element_ids,
+                        "created_at": _now_iso(),
+                    },
+                    bbox=BBox(px - arm, py - arm, arm * 2, arm * 2),
+                    source=command.source,
+                )
+                session_elements[eid] = el
+                await store.put_element(command.session_id, el)
+                created_element_ids.append(eid)
+                messages.append(_create_message(command, "element_created", {
+                    "element_id": eid,
+                    "element_type": "freehand",
+                    "payload": {
+                        "points": pts,
+                        "highlight_kind": "x_marker",
+                        "highlight_part": part,
+                        "target_element_ids": payload.element_ids,
+                        "source": command.source,
+                        **_translate_style_for_frontend(style_dict),
+                    },
+                }))
+            # Text label — use provided label or fall back to canvas coords.
+            text_str = payload.label if payload.label else f"({px:.3g}, {py:.3g})"
+            text_x = _clamp(px + arm + 0.01)
+            text_y = _clamp(py - arm, _Y_MAX)
+            text_bbox = _estimate_text_bbox(text_x, text_y, text_str, font_size=18)
+            text_style = {
+                "stroke_color": style_dict.get("stroke_color", "#111111"),
+                "stroke_width": 1.0,
+                "fill_color": None,
+                "opacity": style_dict.get("opacity", 1.0),
+                "z_index": style_dict.get("z_index", 0),
+                "delay_ms": style_dict.get("delay_ms", 30),
+                "animate": style_dict.get("animate", True),
+            }
+            text_eid = _next_element_id()
+            text_el = StoredElement(
+                element_id=text_eid,
+                element_type="text",
+                payload={
+                    "text": text_str,
+                    "x": text_x,
+                    "y": text_y,
+                    "font_size": 18,
+                    "style": text_style,
+                    "highlight_kind": "x_marker",
+                    "highlight_part": "label",
+                    "created_at": _now_iso(),
+                },
+                bbox=text_bbox,
+                source=command.source,
+            )
+            session_elements[text_eid] = text_el
+            await store.put_element(command.session_id, text_el)
+            created_element_ids.append(text_eid)
+            messages.append(_create_message(command, "element_created", {
+                "element_id": text_eid,
+                "element_type": "text",
+                "payload": {
+                    "text": text_str,
+                    "x": text_x,
+                    "y": text_y,
+                    "font_size": 18,
+                    "highlight_kind": "x_marker",
+                    "highlight_part": "label",
+                    "source": command.source,
+                    **_translate_style_for_frontend(text_style),
+                },
+            }))
+            applied_count = len(created_element_ids)
+
+        elif target_elements:
             pad = payload.padding
             target_ids = [element.element_id for element in target_elements]
             xs_lo = [e.bbox.x for e in target_elements]
