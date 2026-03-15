@@ -83,6 +83,7 @@ export function ChatPanel({
   const recorderContextRef = useRef<AudioContext | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const isSpeakingRef = useRef(false);
+  const seenFinalTranscriptionsRef = useRef<Set<string>>(new Set());
 
   const addTurn = useCallback((role: LiveTurn["role"], text: string) => {
     const clean = text.trim();
@@ -96,15 +97,30 @@ export function ChatPanel({
   }, []);
 
   const handleEvent = useCallback((event: LiveEventPayload) => {
+    const markAndCheckDuplicate = (role: "user" | "assistant", text: string): boolean => {
+      const clean = text.trim();
+      if (!clean) return true;
+      const key = `${role}:${event.invocationId ?? "no-invocation"}:${clean}`;
+      if (seenFinalTranscriptionsRef.current.has(key)) {
+        return true;
+      }
+      seenFinalTranscriptionsRef.current.add(key);
+      return false;
+    };
+
     if (event.error) {
       addTurn("system", `Live error: ${event.error}`);
     }
 
     if (event.inputTranscription?.finished && event.inputTranscription.text) {
-      addTurn("user", event.inputTranscription.text);
+      if (!markAndCheckDuplicate("user", event.inputTranscription.text)) {
+        addTurn("user", event.inputTranscription.text);
+      }
     }
     if (event.outputTranscription?.finished && event.outputTranscription.text) {
-      addTurn("assistant", event.outputTranscription.text);
+      if (!markAndCheckDuplicate("assistant", event.outputTranscription.text)) {
+        addTurn("assistant", event.outputTranscription.text);
+      }
     }
 
     const parts = event.content?.parts ?? [];

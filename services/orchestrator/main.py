@@ -316,6 +316,18 @@ def _has_audio_output(event_payload: dict[str, Any]) -> bool:
     return False
 
 
+def _is_turn_complete_event(event_payload: dict[str, Any]) -> bool:
+    return event_payload.get("turnComplete") is True
+
+
+def _has_nonempty_output_transcription(event_payload: dict[str, Any]) -> bool:
+    raw_value = event_payload.get("outputTranscription")
+    if not isinstance(raw_value, dict):
+        return False
+    text = raw_value.get("text")
+    return isinstance(text, str) and bool(text.strip())
+
+
 @dataclass(slots=True)
 class LiveRuntime:
     """Container for ADK runtime objects."""
@@ -622,6 +634,7 @@ async def websocket_endpoint(
     persisted_turn_keys: set[tuple[int, Literal["student", "sona"], str]] = set()
     turn_draw_activity: dict[int, dict[str, Any]] = {}
     pending_assistant_transcripts: dict[int, str] = {}
+    assistant_output_started: dict[int, bool] = {}
     canvas_snapshot_bytes: bytes | None = None
 
     def _track_persist_task(task: asyncio.Task[None]) -> None:
@@ -763,6 +776,7 @@ async def websocket_endpoint(
         turn_counter += 1
         turn_id = turn_counter
         queue = InstrumentedLiveRequestQueue(session_id=session_id, turn_id=turn_id)
+        assistant_output_started[turn_id] = False
         canvas_content = await build_canvas_turn_content(
             session_id,
             settings.drawing_service_url,
@@ -827,7 +841,11 @@ async def websocket_endpoint(
                         if assistant_text:
                             pending_assistant_transcripts[active_turn_id] = assistant_text
 
-                        if event_payload.get("turnComplete") is True:
+                        text_parts = _extract_text_parts(event_payload)
+                        if _has_nonempty_output_transcription(event_payload) or text_parts:
+                            assistant_output_started[active_turn_id] = True
+
+                        if _is_turn_complete_event(event_payload):
                             final_assistant_text = pending_assistant_transcripts.pop(
                                 active_turn_id,
                                 None,
@@ -859,7 +877,6 @@ async def websocket_endpoint(
                                     )
                                 )
 
-                        text_parts = _extract_text_parts(event_payload)
                         is_audio_only = _is_audio_only_event(event_payload)
                         if not is_audio_only:
                             logger.info(
@@ -911,6 +928,24 @@ async def websocket_endpoint(
                         event_json = event.model_dump_json(exclude_none=True, by_alias=True)
                         logger.debug(f"[SERVER] Event: {event_json}")
                         await websocket.send_text(event_json)
+                        if _is_turn_complete_event(event_payload) and assistant_output_started.get(
+                            active_turn_id, False
+                        ):
+                            logger.info(
+                                "LIVE_TURN_COMPLETE_STOP session_id=%s turn_id=%s idx=%s",
+                                session_id,
+                                active_turn_id,
+                                event_index,
+                            )
+                            active_queue.close()
+                            break
+                        if _is_turn_complete_event(event_payload):
+                            logger.info(
+                                "LIVE_TURN_COMPLETE_IGNORED session_id=%s turn_id=%s idx=%s reason=no_assistant_output_yet",
+                                session_id,
+                                active_turn_id,
+                                event_index,
+                            )
             except Exception as exc:
                 logger.exception(
                     "LIVE_TURN_DOWNSTREAM_ERROR session_id=%s turn_id=%s: %s",
@@ -920,6 +955,7 @@ async def websocket_endpoint(
                 )
             finally:
                 pending_assistant_transcripts.pop(active_turn_id, None)
+                assistant_output_started.pop(active_turn_id, None)
                 turn_draw_activity.pop(active_turn_id, None)
                 async with turn_state_lock:
                     if live_request_queue is active_queue:

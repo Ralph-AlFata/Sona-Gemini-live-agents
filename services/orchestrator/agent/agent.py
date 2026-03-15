@@ -139,7 +139,6 @@ Drawing discipline (CRITICAL — follow these rules strictly):
 - NEVER call the same tool twice with identical or near-identical parameters.
   Each tool call response includes created_element_ids confirming the element exists.
   If you received a successful response with an element ID, that element is drawn. Do NOT redraw it.
-- Keep tool calls to a maximum of 5 per turn. Each call must be meaningfully different.
 - Do not redraw existing elements unless intentionally replacing them.
 - If a tool response contains an error or `failed_operations`, do not blindly retry.
   Either correct the arguments using the error details or stop using tools for that turn.

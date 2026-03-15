@@ -70,3 +70,9 @@ def test_instrumented_queue_allows_normal_content_after_output_finalized() -> No
 
     request = __import__("asyncio").run(_drain(queue))
     assert request.content is not None
+
+
+def test_is_turn_complete_event() -> None:
+    assert main._is_turn_complete_event({"turnComplete": True}) is True
+    assert main._is_turn_complete_event({"turnComplete": False}) is False
+    assert main._is_turn_complete_event({}) is False

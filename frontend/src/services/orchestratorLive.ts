@@ -11,6 +11,7 @@ export interface LiveRunOptions {
 
 export interface LiveEventPayload {
   author?: string;
+  invocationId?: string;
   interrupted?: boolean;
   inputTranscription?: {
     text?: string;
