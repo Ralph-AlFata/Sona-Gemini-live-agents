@@ -7,7 +7,6 @@ import math
 
 from google.adk.tools import ToolContext
 
-from agent.tools._canonical import enforce_canonical_labels
 from agent.tools._cursor import BBox, LEFT_MARGIN, RIGHT_EDGE
 from agent.tools._cursor_store import clear_cursor, get_cursor
 from agent.tools._shared import execute_tool_command, resolve_session_id, result_to_dict
@@ -332,25 +331,6 @@ async def draw_shape(
             },
         }
     )
-    if data.labels:
-        original_labels = list(data.labels)
-        remapped_labels = enforce_canonical_labels(
-            data.shape,
-            [
-                {"x": point.x, "y": point.y}
-                for point in data.points
-            ],
-            original_labels,
-        )
-        if remapped_labels != original_labels:
-            logger.info(
-                "CANONICAL_LABEL_REMAP session_id=%s shape=%s original=%s remapped=%s",
-                session_id,
-                data.shape,
-                original_labels,
-                remapped_labels,
-            )
-            data.labels = remapped_labels
     result = await execute_tool_command(
         session_id=session_id,
         operation="draw_shape",

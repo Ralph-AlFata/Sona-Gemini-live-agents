@@ -328,6 +328,29 @@ def _has_nonempty_output_transcription(event_payload: dict[str, Any]) -> bool:
     return isinstance(text, str) and bool(text.strip())
 
 
+def _has_assistant_speech_output(event_payload: dict[str, Any]) -> bool:
+    return _has_audio_output(event_payload) or _has_nonempty_output_transcription(event_payload)
+
+
+def _should_retry_empty_turn(
+    event_payload: dict[str, Any],
+    *,
+    function_calls: list[str],
+    text_parts: list[str],
+) -> bool:
+    if not _is_turn_complete_event(event_payload):
+        return False
+    if _has_assistant_speech_output(event_payload):
+        return False
+    if function_calls or text_parts:
+        return False
+    raw_value = event_payload.get("outputTranscription")
+    if isinstance(raw_value, dict) and raw_value.get("finished") is True:
+        text = raw_value.get("text")
+        return not (isinstance(text, str) and text.strip())
+    return False
+
+
 @dataclass(slots=True)
 class LiveRuntime:
     """Container for ADK runtime objects."""
@@ -634,7 +657,9 @@ async def websocket_endpoint(
     persisted_turn_keys: set[tuple[int, Literal["student", "sona"], str]] = set()
     turn_draw_activity: dict[int, dict[str, Any]] = {}
     pending_assistant_transcripts: dict[int, str] = {}
-    assistant_output_started: dict[int, bool] = {}
+    assistant_speech_started: dict[int, bool] = {}
+    turn_audio_replay_chunks: dict[int, list[bytes]] = {}
+    empty_turn_retry_sent: dict[int, bool] = {}
     canvas_snapshot_bytes: bytes | None = None
 
     def _track_persist_task(task: asyncio.Task[None]) -> None:
@@ -776,7 +801,8 @@ async def websocket_endpoint(
         turn_counter += 1
         turn_id = turn_counter
         queue = InstrumentedLiveRequestQueue(session_id=session_id, turn_id=turn_id)
-        assistant_output_started[turn_id] = False
+        assistant_speech_started[turn_id] = False
+        empty_turn_retry_sent[turn_id] = False
         canvas_content = await build_canvas_turn_content(
             session_id,
             settings.drawing_service_url,
@@ -842,8 +868,8 @@ async def websocket_endpoint(
                             pending_assistant_transcripts[active_turn_id] = assistant_text
 
                         text_parts = _extract_text_parts(event_payload)
-                        if _has_nonempty_output_transcription(event_payload) or text_parts:
-                            assistant_output_started[active_turn_id] = True
+                        if _has_assistant_speech_output(event_payload):
+                            assistant_speech_started[active_turn_id] = True
 
                         if _is_turn_complete_event(event_payload):
                             final_assistant_text = pending_assistant_transcripts.pop(
@@ -928,7 +954,33 @@ async def websocket_endpoint(
                         event_json = event.model_dump_json(exclude_none=True, by_alias=True)
                         logger.debug(f"[SERVER] Event: {event_json}")
                         await websocket.send_text(event_json)
-                        if _is_turn_complete_event(event_payload) and assistant_output_started.get(
+                        if _should_retry_empty_turn(
+                            event_payload,
+                            function_calls=function_calls,
+                            text_parts=text_parts,
+                        ) and not empty_turn_retry_sent.get(active_turn_id, False):
+                            replay_chunks = turn_audio_replay_chunks.get(active_turn_id) or []
+                            if replay_chunks:
+                                empty_turn_retry_sent[active_turn_id] = True
+                                logger.info(
+                                    "LIVE_EMPTY_TURN_RETRY session_id=%s turn_id=%s idx=%s chunks=%s",
+                                    session_id,
+                                    active_turn_id,
+                                    event_index,
+                                    len(replay_chunks),
+                                )
+                                active_queue.send_activity_start(source="empty_turn_retry")
+                                for chunk in replay_chunks:
+                                    active_queue.send_realtime(
+                                        types.Blob(
+                                            mime_type="audio/pcm;rate=16000",
+                                            data=chunk,
+                                        ),
+                                        source="empty_turn_retry",
+                                    )
+                                active_queue.send_activity_end(source="empty_turn_retry")
+                                continue
+                        if _is_turn_complete_event(event_payload) and assistant_speech_started.get(
                             active_turn_id, False
                         ):
                             logger.info(
@@ -941,7 +993,7 @@ async def websocket_endpoint(
                             break
                         if _is_turn_complete_event(event_payload):
                             logger.info(
-                                "LIVE_TURN_COMPLETE_IGNORED session_id=%s turn_id=%s idx=%s reason=no_assistant_output_yet",
+                                "LIVE_TURN_COMPLETE_IGNORED session_id=%s turn_id=%s idx=%s reason=no_assistant_speech_yet",
                                 session_id,
                                 active_turn_id,
                                 event_index,
@@ -955,7 +1007,9 @@ async def websocket_endpoint(
                 )
             finally:
                 pending_assistant_transcripts.pop(active_turn_id, None)
-                assistant_output_started.pop(active_turn_id, None)
+                assistant_speech_started.pop(active_turn_id, None)
+                turn_audio_replay_chunks.pop(active_turn_id, None)
+                empty_turn_retry_sent.pop(active_turn_id, None)
                 turn_draw_activity.pop(active_turn_id, None)
                 async with turn_state_lock:
                     if live_request_queue is active_queue:
@@ -1085,6 +1139,7 @@ async def websocket_endpoint(
                             source="browser_audio_flush",
                         )
                     queue.send_activity_end(source="browser_activity_end_flush")
+                    turn_audio_replay_chunks[getattr(queue, "_turn_id")] = list(buffered_audio_chunks)
                     logger.info(
                         "LIVE_ACTIVITY_AUDIO_FLUSH session_id=%s chunks=%s bytes=%s",
                         session_id,

@@ -1,12 +1,29 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import httpx
 from google.genai import types
 
 logger = logging.getLogger(__name__)
 CANVAS_STATE_TIMEOUT_SECONDS = 2.0
+
+
+def _hypotenuse_side_index(points: list[dict]) -> int | None:
+    if len(points) < 4:
+        return None
+    vertices = points[:-1] if points and points[0] == points[-1] else points
+    if len(vertices) != 3:
+        return None
+    side_lengths = [
+        math.hypot(
+            float(vertices[(index + 1) % 3]["x"]) - float(vertices[index]["x"]),
+            float(vertices[(index + 1) % 3]["y"]) - float(vertices[index]["y"]),
+        )
+        for index in range(3)
+    ]
+    return max(range(3), key=side_lengths.__getitem__)
 
 
 async def fetch_canvas_description(
@@ -79,11 +96,34 @@ async def fetch_canvas_description(
 
         labels = raw.get("labels")
         label_str = f", labels: {labels}" if isinstance(labels, list) and labels else ""
+        element_id = str(raw.get("id", "")).strip()
+        id_str = f" id={element_id}" if element_id else ""
+        side_labels = raw.get("side_labels")
+        side_label_str = ""
+        if isinstance(side_labels, list) and side_labels:
+            side_bits: list[str] = []
+            for entry in side_labels:
+                if not isinstance(entry, dict):
+                    continue
+                side_index = entry.get("side_index")
+                text = entry.get("text")
+                if isinstance(side_index, int) and isinstance(text, str) and text.strip():
+                    side_bits.append(f"side{side_index}='{text.strip()}'")
+            if side_bits:
+                side_label_str = ", side_labels: [" + ", ".join(side_bits) + "]"
+        hypotenuse_str = ""
+        points = raw.get("points")
+        if element_type == "right_triangle" and isinstance(points, list):
+            hypotenuse_index = _hypotenuse_side_index(points)
+            if hypotenuse_index is not None:
+                hypotenuse_str = f", hypotenuse_side=side{hypotenuse_index}"
         lines.append(
-            f"{source_tag} {element_type} at "
+            f"{source_tag} {element_type}{id_str} at "
             f'({float(bbox.get("x", 0.0)):.2f}, {float(bbox.get("y", 0.0)):.2f}), '
             f'size {float(bbox.get("width", 0.0)):.2f}x{float(bbox.get("height", 0.0)):.2f}'
             f"{label_str}"
+            f"{side_label_str}"
+            f"{hypotenuse_str}"
         )
 
     if not lines:

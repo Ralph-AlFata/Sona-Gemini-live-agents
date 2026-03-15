@@ -372,6 +372,7 @@ class CanvasStateElement(_StrictBase):
     source: Literal["ai", "user"] = "ai"
     points: list[Point] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
+    side_labels: list[dict[str, Any]] = Field(default_factory=list)
     text: str | None = None
     style: dict[str, Any] = Field(default_factory=dict)
     bbox: dict[str, float] = Field(default_factory=dict)

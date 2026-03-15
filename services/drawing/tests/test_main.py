@@ -309,6 +309,11 @@ def test_canvas_state_returns_sources_labels_and_bbox() -> None:
         assert rectangle["type"] == "rectangle"
         assert rectangle["source"] == "ai"
         assert rectangle["labels"] == ["AB", "BC", "CA"]
+        assert rectangle["side_labels"] == [
+            {"side_index": 0, "text": "AB", "element_id": rectangle["side_labels"][0]["element_id"]},
+            {"side_index": 1, "text": "BC", "element_id": rectangle["side_labels"][1]["element_id"]},
+            {"side_index": 2, "text": "CA", "element_id": rectangle["side_labels"][2]["element_id"]},
+        ]
         assert rectangle["bbox"]["x"] == 0.1
         assert rectangle["bbox"]["y"] == 0.2
         assert rectangle["bbox"]["width"] == pytest.approx(0.2)

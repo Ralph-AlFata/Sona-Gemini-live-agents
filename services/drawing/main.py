@@ -261,6 +261,18 @@ async def get_canvas_state(session_id: str, request: Request) -> CanvasStateResp
             for entry in side_labels
             if isinstance(entry, dict) and str(entry.get("text", "")).strip()
         ] if isinstance(side_labels, list) else []
+        side_label_entries = [
+            {
+                "side_index": int(entry.get("side_index", -1)),
+                "text": str(entry.get("text", "")),
+                "element_id": str(entry.get("element_id", "")),
+            }
+            for entry in side_labels
+            if isinstance(entry, dict)
+            and isinstance(entry.get("side_index"), int)
+            and isinstance(entry.get("text"), str)
+            and entry.get("text", "").strip()
+        ] if isinstance(side_labels, list) else []
         points = payload.get("points")
         elements.append(
             CanvasStateElement(
@@ -269,6 +281,7 @@ async def get_canvas_state(session_id: str, request: Request) -> CanvasStateResp
                 source="user" if element.source == "user" else "ai",
                 points=points if isinstance(points, list) else [],
                 labels=labels,
+                side_labels=side_label_entries,
                 text=str(payload["text"]) if isinstance(payload.get("text"), str) else None,
                 style=style if isinstance(style, dict) else {},
                 bbox={

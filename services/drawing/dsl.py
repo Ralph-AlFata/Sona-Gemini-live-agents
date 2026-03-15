@@ -175,6 +175,42 @@ def _shape_vertices(points: list[dict[str, float]]) -> list[dict[str, float]]:
     return points
 
 
+def _side_length(p1: dict[str, float], p2: dict[str, float]) -> float:
+    return math.hypot(p2["x"] - p1["x"], p2["y"] - p1["y"])
+
+
+def _canonicalize_shape_labels(
+    shape: str | None,
+    points: list[dict[str, float]],
+    labels: list[str],
+) -> list[str]:
+    if shape != "right_triangle" or len(labels) != 3:
+        return labels
+
+    vertices = _shape_vertices(points)
+    if len(vertices) != 3:
+        return labels
+
+    side_lengths = [
+        _side_length(vertices[index], vertices[(index + 1) % 3])
+        for index in range(3)
+    ]
+    hypotenuse_index = max(range(3), key=side_lengths.__getitem__)
+
+    remapped = [""] * 3
+    remapped[hypotenuse_index] = labels[-1]
+
+    leg_labels = labels[:-1]
+    leg_index = 0
+    for index in range(3):
+        if index == hypotenuse_index:
+            continue
+        remapped[index] = leg_labels[leg_index]
+        leg_index += 1
+
+    return remapped
+
+
 def _shape_centroid(points: list[dict[str, float]]) -> tuple[float, float]:
     vertices = _shape_vertices(points)
     count = max(len(vertices), 1)
@@ -859,8 +895,13 @@ async def apply_command(
                         _create_message(command, "elements_deleted", {"element_ids": deleted_ids})
                     )
 
+                shape_points = shape_element.payload.get("points", [])
+                raw_shape = shape_element.payload.get("shape")
+                shape_kind = raw_shape if isinstance(raw_shape, str) else None
+                labels = _canonicalize_shape_labels(shape_kind, shape_points, payload.labels)
+
                 new_entries: list[dict] = []
-                for side_index, label_text in enumerate(payload.labels):
+                for side_index, label_text in enumerate(labels):
                     if not label_text.strip():
                         continue
                     label_id = _next_element_id()

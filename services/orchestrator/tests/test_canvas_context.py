@@ -25,6 +25,17 @@ async def test_fetch_canvas_description_mixed_elements() -> None:
                         "type": "right_triangle",
                         "source": "user",
                         "labels": ["a", "b", "c"],
+                        "side_labels": [
+                            {"side_index": 0, "text": "a", "element_id": "label_1"},
+                            {"side_index": 1, "text": "c", "element_id": "label_2"},
+                            {"side_index": 2, "text": "b", "element_id": "label_3"},
+                        ],
+                        "points": [
+                            {"x": 0.1, "y": 0.6},
+                            {"x": 0.4, "y": 0.6},
+                            {"x": 0.1, "y": 0.2},
+                            {"x": 0.1, "y": 0.6},
+                        ],
                         "bbox": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
                     },
                     {
@@ -57,8 +68,10 @@ async def test_fetch_canvas_description_mixed_elements() -> None:
         description = await fetch_canvas_description("s1", "http://drawing:8002", "token-123")
 
     assert description is not None
-    assert "[STUDENT] right_triangle" in description
+    assert "[STUDENT] right_triangle id=shape_1" in description
     assert "labels: ['a', 'b', 'c']" in description
+    assert "side_labels: [side0='a', side1='c', side2='b']" in description
+    assert "hypotenuse_side=side1" in description
     assert '[TUTOR] text "Pythagorean theorem"' in description
     assert "[STUDENT] freehand stroke" in description
 

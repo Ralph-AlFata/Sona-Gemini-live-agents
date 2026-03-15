@@ -210,7 +210,7 @@ async def test_draw_shape_with_labels_uses_shape_label_edit_operation(
         "set_shape_labels",
     ]
     assert _fake_client.calls[1]["payload"]["element_id"] == result["shape_id"]
-    assert _fake_client.calls[1]["payload"]["labels"] == ["a", "c", "b"]
+    assert _fake_client.calls[1]["payload"]["labels"] == ["a", "b", "c"]
 
 
 @pytest.mark.asyncio

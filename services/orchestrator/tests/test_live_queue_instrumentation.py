@@ -76,3 +76,69 @@ def test_is_turn_complete_event() -> None:
     assert main._is_turn_complete_event({"turnComplete": True}) is True
     assert main._is_turn_complete_event({"turnComplete": False}) is False
     assert main._is_turn_complete_event({}) is False
+
+
+def test_has_assistant_speech_output_with_transcription() -> None:
+    assert (
+        main._has_assistant_speech_output(
+            {"outputTranscription": {"text": "hello", "finished": False}}
+        )
+        is True
+    )
+
+
+def test_has_assistant_speech_output_with_audio_only_payload() -> None:
+    assert (
+        main._has_assistant_speech_output(
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "audio/pcm;rate=24000",
+                                "data": "AQID",
+                            }
+                        }
+                    ]
+                }
+            }
+        )
+        is True
+    )
+
+
+def test_has_assistant_speech_output_ignores_text_parts_only() -> None:
+    assert (
+        main._has_assistant_speech_output(
+            {"content": {"parts": [{"text": "tool summary"}]}}
+        )
+        is False
+    )
+
+
+def test_should_retry_empty_turn_for_finished_empty_transcription() -> None:
+    assert (
+        main._should_retry_empty_turn(
+            {
+                "turnComplete": True,
+                "outputTranscription": {"text": "", "finished": True},
+            },
+            function_calls=[],
+            text_parts=[],
+        )
+        is True
+    )
+
+
+def test_should_not_retry_turn_with_function_calls() -> None:
+    assert (
+        main._should_retry_empty_turn(
+            {
+                "turnComplete": True,
+                "outputTranscription": {"text": "", "finished": True},
+            },
+            function_calls=["canvas_actions"],
+            text_parts=[],
+        )
+        is False
+    )
