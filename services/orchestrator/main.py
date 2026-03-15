@@ -131,6 +131,30 @@ class InstrumentedLiveRequestQueue(LiveRequestQueue):
         self._turn_id = turn_id
         self._sequence = 0
         self._meta_queue: asyncio.Queue[_LiveRequestMeta] = asyncio.Queue()
+        self._assistant_output_finalized = False
+
+    def mark_assistant_output_finalized(self) -> None:
+        self._assistant_output_finalized = True
+
+    def _should_drop(self, request: LiveRequest, source: str) -> bool:
+        if (
+            self._assistant_output_finalized
+            and source == "adk_function_response_feedback"
+        ):
+            logger.info(
+                "LIVE_QUEUE_DROP session_id=%s turn_id=%s source=%s reason=assistant_output_finalized",
+                self._session_id,
+                self._turn_id,
+                source,
+            )
+            return True
+        return False
+
+    def _enqueue(self, request: LiveRequest, source: str) -> None:
+        if self._should_drop(request, source):
+            return
+        self._log_enqueue(request, source)
+        self._queue.put_nowait(request)
 
     def _log_enqueue(self, request: LiveRequest, source: str) -> None:
         self._sequence += 1
@@ -164,8 +188,7 @@ class InstrumentedLiveRequestQueue(LiveRequestQueue):
 
     def close(self, source: str | None = None):
         request = LiveRequest(close=True)
-        self._log_enqueue(request, _infer_live_request_source(request, source))
-        self._queue.put_nowait(request)
+        self._enqueue(request, _infer_live_request_source(request, source))
 
     def send_content(
         self,
@@ -174,27 +197,22 @@ class InstrumentedLiveRequestQueue(LiveRequestQueue):
         source: str | None = None,
     ):
         request = LiveRequest(content=content, turn_complete=turn_complete)
-        self._log_enqueue(request, _infer_live_request_source(request, source))
-        self._queue.put_nowait(request)
+        self._enqueue(request, _infer_live_request_source(request, source))
 
     def send_realtime(self, blob: types.Blob, source: str | None = None):
         request = LiveRequest(blob=blob)
-        self._log_enqueue(request, _infer_live_request_source(request, source))
-        self._queue.put_nowait(request)
+        self._enqueue(request, _infer_live_request_source(request, source))
 
     def send_activity_start(self, source: str | None = None):
         request = LiveRequest(activity_start=types.ActivityStart())
-        self._log_enqueue(request, _infer_live_request_source(request, source))
-        self._queue.put_nowait(request)
+        self._enqueue(request, _infer_live_request_source(request, source))
 
     def send_activity_end(self, source: str | None = None):
         request = LiveRequest(activity_end=types.ActivityEnd())
-        self._log_enqueue(request, _infer_live_request_source(request, source))
-        self._queue.put_nowait(request)
+        self._enqueue(request, _infer_live_request_source(request, source))
 
     def send(self, req: LiveRequest, source: str | None = None):
-        self._log_enqueue(req, _infer_live_request_source(req, source))
-        self._queue.put_nowait(req)
+        self._enqueue(req, _infer_live_request_source(req, source))
 
     async def get(self) -> LiveRequest:
         request = await self._queue.get()
@@ -575,7 +593,6 @@ async def websocket_endpoint(
         await websocket.close(code=1011)
         return
 
-    # TODO: Double check here if the actual runtime is being updated globally, or it's just inside the function and then it's dropping
     await _ensure_adk_session(runtime, user_id=effective_user_id, session_id=session_id)
     try:
         await _ensure_persisted_session(
@@ -816,6 +833,10 @@ async def websocket_endpoint(
                                 None,
                             )
                             if final_assistant_text:
+                                if active_queue is live_request_queue and isinstance(
+                                    active_queue, InstrumentedLiveRequestQueue
+                                ):
+                                    active_queue.mark_assistant_output_finalized()
                                 draw_activity = turn_draw_activity.pop(active_turn_id, None)
                                 metadata = (
                                     draw_activity

@@ -28,6 +28,11 @@ class PointInput(_StrictModel):
     y: float = Field(ge=0.0, le=2.0)  # width-uniform coords: y range = height/width
 
 
+class CircleCenterInput(_StrictModel):
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=2.0)
+
+
 class DrawShapeInput(_StrictModel):
     """
     Input for the draw_shape tool.
@@ -50,6 +55,8 @@ class DrawShapeInput(_StrictModel):
         "square",
     ]
     points: list[PointInput] | None = Field(default=None, min_length=2)
+    center: CircleCenterInput | None = None
+    radius: float | None = Field(default=None, gt=0.0, le=1.0)
     width: float | None = Field(default=None, gt=0.0, le=1.0)
     height: float | None = Field(default=None, gt=0.0, le=2.0)
     next: NextDirection = "below"
@@ -58,7 +65,25 @@ class DrawShapeInput(_StrictModel):
 
     @model_validator(mode="after")
     def _validate_labels(self) -> "DrawShapeInput":
+        if self.shape != "circle" and (self.center is not None or self.radius is not None):
+            raise ValueError("center/radius are only supported for shape 'circle'")
+
+        if self.shape in {"circle", "ellipse"} and self.labels:
+            raise ValueError(f"labels are not supported for shape '{self.shape}'")
+
+        has_center = self.center is not None
+        has_radius = self.radius is not None
+        if has_center != has_radius:
+            raise ValueError("circle center and radius must be provided together")
+
+        if self.points is not None and has_center:
+            raise ValueError("provide either explicit points or center/radius, not both")
+
         if self.points is None:
+            if self.shape == "circle" and has_center:
+                if self.width is not None or self.height is not None:
+                    raise ValueError("circle center/radius cannot be combined with width/height")
+                return self
             if self.width is None:
                 raise ValueError("provide 'points' or 'width' for shape placement")
             if self.labels:
@@ -69,8 +94,6 @@ class DrawShapeInput(_StrictModel):
             return self
 
         edge_count = len(self.points) - 1
-        if self.shape in {"circle", "ellipse"}:
-            raise ValueError(f"labels are not supported for shape '{self.shape}'")
         if edge_count < 1:
             raise ValueError("labels require at least one side")
         if len(self.labels) > edge_count:

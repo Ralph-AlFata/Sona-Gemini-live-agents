@@ -114,7 +114,6 @@ def _estimate_text_bbox(x: float, y: float, text: str, font_size: int) -> BBox:
     approx_height = min(0.25, 0.03 * (font_size / 24))
     return BBox(x, y, approx_width, approx_height)
 
-# TODO: Check why when we ask it to draw an S-shaped line, it gives us this weird thing
 def _build_freehand_element(payload: DrawFreehandPayload) -> tuple[dict, BBox]:
     xs = [point.x for point in payload.points]
     ys = [point.y for point in payload.points]

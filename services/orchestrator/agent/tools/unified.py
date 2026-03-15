@@ -45,6 +45,8 @@ async def draw(
     # shape-specific
     shape: str | None = None,
     points: list[dict[str, float]] | None = None,
+    center: dict[str, float] | None = None,
+    radius: float | None = None,
     width: float | None = None,
     height: float | None = None,
     labels: list[str] | None = None,
@@ -74,7 +76,8 @@ async def draw(
       "shape"    — draw a geometric shape. Requires `shape`. Use either:
                    - automatic placement: omit `points`, optionally pass
                      `width`/`height` and `next`
-                   - manual placement: provide `points`.
+                   - manual placement: provide `points`
+                   - for circles: provide `center` and `radius`
                    Optional `labels` maps by index to the shape's sides.
                    Do NOT use this to plot mathematical functions on axes.
                    Important shape distinction:
@@ -102,6 +105,7 @@ async def draw(
     Common mistakes to avoid:
     - Do not omit `action`.
     - Do not use `shape="triangle"` for a right-triangle diagram.
+    - For circles, prefer `center` and `radius` over manual perimeter `points`.
     - Do not call `draw(action="text", ...)` when you meant to label an
       existing shape side; use `edit_canvas(action="set_shape_labels", ...)`.
     - After a successful create call, read `created_element_ids` from the
@@ -113,6 +117,8 @@ async def draw(
         return await _draw_shape(
             shape=shape,
             points=points,
+            center=center,
+            radius=radius,
             width=width,
             height=height,
             next=next,

@@ -95,6 +95,41 @@ async def test_draw_shape_maps_payload(monkeypatch: pytest.MonkeyPatch, _fake_cl
 
 
 @pytest.mark.asyncio
+async def test_draw_circle_accepts_center_and_radius(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await core.draw_shape(
+        shape="circle",
+        center={"x": 0.4, "y": 0.4},
+        radius=0.08,
+        stroke_color="#00aa00",
+    )
+
+    assert result["status"] == "success"
+    assert _fake_client.calls[0]["operation"] == "draw_shape"
+    assert _fake_client.calls[0]["payload"]["shape"] == "circle"
+    assert len(_fake_client.calls[0]["payload"]["points"]) > 10
+    assert _fake_client.calls[0]["payload"]["style"]["stroke_color"] == "#00aa00"
+
+
+@pytest.mark.asyncio
+async def test_auto_shape_payload_omits_null_circle_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_test")
+
+    await core.draw_shape(shape="right_triangle")
+
+    payload = _fake_client.calls[0]["payload"]
+    assert "center" not in payload
+    assert "radius" not in payload
+
+
+@pytest.mark.asyncio
 async def test_duplicate_draw_freehand_returns_dedup_instruction_and_does_not_move_cursor(
     monkeypatch: pytest.MonkeyPatch,
     _fake_client: _FakeClient,
@@ -113,6 +148,36 @@ async def test_duplicate_draw_freehand_returns_dedup_instruction_and_does_not_mo
     assert "DO NOT call the same tool again" in second["message"]
     assert second["created_element_ids"] == first["created_element_ids"]
     assert second["previous_command_id"] == first["command_id"]
+    assert second["cursor_after"] == first["cursor_after"]
+    assert len(_fake_client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_auto_draw_text_deduplicates_without_advancing_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_text_dedup")
+
+    first = await core.draw_text(text="repeat me")
+    second = await core.draw_text(text="repeat me")
+
+    assert second["deduplicated"] is True
+    assert second["cursor_after"] == first["cursor_after"]
+    assert len(_fake_client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_auto_draw_shape_deduplicates_without_advancing_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_shape_dedup")
+
+    first = await core.draw_shape(shape="rectangle", width=0.2, height=0.1)
+    second = await core.draw_shape(shape="rectangle", width=0.2, height=0.1)
+
+    assert second["deduplicated"] is True
     assert second["cursor_after"] == first["cursor_after"]
     assert len(_fake_client.calls) == 1
 
@@ -519,6 +584,31 @@ def test_draw_shape_rejects_too_many_labels() -> None:
         )
 
 
+def test_draw_circle_accepts_center_and_radius_in_schema() -> None:
+    data = DrawShapeInput.model_validate(
+        {
+            "shape": "circle",
+            "center": {"x": 0.4, "y": 0.4},
+            "radius": 0.08,
+            "style": {},
+        }
+    )
+
+    assert data.center is not None
+    assert data.radius == pytest.approx(0.08)
+
+
+def test_draw_circle_rejects_center_without_radius() -> None:
+    with pytest.raises(ValidationError):
+        DrawShapeInput.model_validate(
+            {
+                "shape": "circle",
+                "center": {"x": 0.4, "y": 0.4},
+                "style": {},
+            }
+        )
+
+
 def test_highlight_rejects_unsupported_type() -> None:
     with pytest.raises(ValidationError):
         HighlightInput.model_validate(
@@ -700,6 +790,21 @@ async def test_axes_grid_auto_placement_uses_cursor(
     assert grid_result["cursor_after"]["x"] == pytest.approx(0.06, abs=1e-3)
     assert grid_result["cursor_after"]["y"] == pytest.approx(0.4, abs=1e-3)
     assert _fake_client.calls[1]["payload"]["y"] == pytest.approx(0.4, abs=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_auto_axes_grid_deduplicates_without_advancing_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_grid_dedup")
+
+    first = await math_helpers.draw_axes_grid(width=0.4, height=0.35)
+    second = await math_helpers.draw_axes_grid(width=0.4, height=0.35)
+
+    assert second["deduplicated"] is True
+    assert second["cursor_after"] == first["cursor_after"]
+    assert len(_fake_client.calls) == 1
 
 
 @pytest.mark.asyncio

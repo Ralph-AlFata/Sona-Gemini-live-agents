@@ -207,6 +207,8 @@ def _clamp_points_to_canvas(
 async def draw_shape(
     shape: str,
     points: list[dict[str, float]] | None = None,
+    center: dict[str, float] | None = None,
+    radius: float | None = None,
     width: float | None = None,
     height: float | None = None,
     next: str = "below",
@@ -228,6 +230,7 @@ async def draw_shape(
       `height`; otherwise sensible defaults are used. The shape is placed at
       the current cursor and the cursor advances.
     - MANUAL: Provide explicit `points`. The cursor is not moved.
+    - CIRCLE BY CENTER: For `shape="circle"`, provide `center` and `radius`.
 
     `next` controls cursor flow after automatic placement:
     "below" (default), "right", "left", or "below_all".
@@ -249,8 +252,21 @@ async def draw_shape(
     cursor = None
     normalized_shape_size = False
     normalized_points = False
+    dedup_payload: dict | None = None
+    circle_center = center
+    circle_radius = radius
 
-    if points is None:
+    if shape == "circle" and center is not None and radius is not None:
+        points = shape_to_points(
+            "circle",
+            center["x"] - radius,
+            center["y"] - radius,
+            radius * 2,
+            radius * 2,
+        )
+        circle_center = None
+        circle_radius = None
+    elif points is None:
         if shape not in _SUPPORTED_SHAPES:
             raise ValueError(f"unsupported shape '{shape}'")
         if width is not None and width <= 0:
@@ -276,6 +292,22 @@ async def draw_shape(
         width = auto_width
         height = auto_height
         used_cursor = True
+        dedup_payload = {
+            "shape": shape,
+            "width": width,
+            "height": height,
+            "next": next,
+            "labels": labels or [],
+            "style": {
+                "stroke_color": stroke_color,
+                "stroke_width": stroke_width,
+                "fill_color": fill_color,
+                "opacity": opacity,
+                "z_index": z_index,
+                "delay_ms": delay_ms,
+                "animate": animate,
+            },
+        }
     else:
         points, normalized_points = _clamp_points_to_canvas(points)
 
@@ -283,6 +315,8 @@ async def draw_shape(
         {
             "shape": shape,
             "points": points,
+            "center": circle_center,
+            "radius": circle_radius,
             "width": width,
             "height": height,
             "next": next,
@@ -320,7 +354,12 @@ async def draw_shape(
     result = await execute_tool_command(
         session_id=session_id,
         operation="draw_shape",
-        payload=data.model_dump(mode="json", exclude={"labels", "width", "height", "next"}),
+        payload=data.model_dump(
+            mode="json",
+            exclude={"labels", "width", "height", "next"},
+            exclude_none=True,
+        ),
+        dedup_payload=dedup_payload,
     )
     response = result_to_dict(result)
     shape_id = result.created_element_ids[0] if result.created_element_ids else None
@@ -396,6 +435,7 @@ async def draw_text(
     used_cursor = False
     cursor = None
     normalized_partial_coords = False
+    dedup_payload: dict | None = None
 
     # LLMs sometimes emit only one coordinate. Normalize that to automatic
     # placement instead of failing the whole live turn.
@@ -412,6 +452,20 @@ async def draw_text(
         x = bbox.x
         y = bbox.y
         used_cursor = True
+        dedup_payload = {
+            "text": text,
+            "next": next,
+            "font_size": font_size,
+            "style": {
+                "stroke_color": stroke_color,
+                "stroke_width": stroke_width,
+                "fill_color": fill_color,
+                "opacity": opacity,
+                "z_index": z_index,
+                "delay_ms": delay_ms,
+                "animate": animate,
+            },
+        }
 
     data = DrawTextInput.model_validate(
         {
@@ -435,6 +489,7 @@ async def draw_text(
         session_id=session_id,
         operation="draw_text",
         payload=data.model_dump(mode="json", exclude={"next"}),
+        dedup_payload=dedup_payload,
     )
     response = result_to_dict(result)
     if used_cursor and cursor is not None and result.deduplicated:

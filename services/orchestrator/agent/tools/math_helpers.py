@@ -15,7 +15,7 @@ from sympy.parsing.sympy_parser import (
 
 from agent.tools._cursor import LEFT_MARGIN, RIGHT_EDGE
 from agent.tools._cursor_store import get_cursor
-from agent.tools._shared import execute_tool_command, resolve_session_id
+from agent.tools._shared import execute_tool_command, resolve_session_id, result_to_dict
 from agent.tools._trace import emit_draw_trace
 from agent.tools.core import shape_to_points
 
@@ -132,13 +132,25 @@ async def draw_axes_grid(
     used_cursor = False
     cursor = None
     normalized_size = False
+    dedup_payload: dict | None = None
     width, height, normalized_size = _normalize_graph_size(width, height)
     if x is None and y is None:
         cursor = get_cursor(session_id)
+        cursor_before = cursor.to_snapshot_dict()
         bbox = cursor.place(width, height, next_direction=next)
         x = bbox.x
         y = bbox.y
         used_cursor = True
+        dedup_payload = {
+            "width": width,
+            "height": height,
+            "next": next,
+            "grid_lines": grid_lines,
+            "domain_min": domain_min,
+            "domain_max": domain_max,
+            "y_min": y_min,
+            "y_max": y_max,
+        }
 
     grid_lines = max(2, min(30, grid_lines))
     viewport_rect, clamped_viewport = _clamp_graph_viewport(x, y, width, height)
@@ -163,18 +175,24 @@ async def draw_axes_grid(
             "grid_color": "#bbbbbb",
             "grid_opacity": 0.5,
         },
+        dedup_payload=dedup_payload,
     )
     _store_graph_viewport(tool_context, viewport)
+    if used_cursor and cursor is not None and result.deduplicated:
+        cursor.x = cursor_before["x"]
+        cursor.y = cursor_before["y"]
+        cursor.row_start_y = cursor_before["row_start_y"]
+        cursor.row_max_bottom = cursor_before["row_max_bottom"]
+        cursor.row_start_x = cursor_before["row_start_x"]
+        cursor.column_max_right = cursor_before["column_max_right"]
+        cursor.bottom_edge = cursor_before["bottom_edge"]
     if used_cursor and cursor is not None:
-        emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
+        if not result.deduplicated:
+            emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
 
     response = {
-        "status": "success",
+        **result_to_dict(result),
         "operation": "draw_axes_grid",
-        "command_id": result.command_id,
-        "applied_count": result.applied_count,
-        "created_element_ids": result.created_element_ids,
-        "failed_operations": result.failed_operations,
         "element_bbox": {
             "x": round(viewport["x"], 4),
             "y": round(viewport["y"], 4),

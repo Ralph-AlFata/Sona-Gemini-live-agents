@@ -76,11 +76,13 @@ async def execute_tool_command(
     session_id: str,
     operation: str,
     payload: dict,
+    dedup_payload: dict | None = None,
 ) -> DrawingCommandResult:
     """Execute a drawing command immediately (synchronous tool behavior)."""
     # --- Deduplication check ---
     dedup = _get_deduplicator()
-    cached = await dedup.get(session_id, operation, payload)
+    key_payload = dedup_payload if dedup_payload is not None else payload
+    cached = await dedup.get(session_id, operation, key_payload)
     if cached is not None:
         logger.warning(
             "TOOL_CALL_DEDUP session_id=%s operation=%s payload=%s",
@@ -128,6 +130,6 @@ async def execute_tool_command(
     )
 
     # --- Cache result for dedup (uses the pre-generated element IDs) ---
-    await dedup.put(session_id, operation, payload, result)
+    await dedup.put(session_id, operation, key_payload, result)
 
     return result

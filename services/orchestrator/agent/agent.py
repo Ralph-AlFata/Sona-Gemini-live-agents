@@ -62,6 +62,7 @@ Critical tool-call contract:
 
    action="shape":    provide `shape` + (`width`,`height`) for auto-placement,
                       OR `shape` + `points` for manual placement.
+                      For circles, prefer `shape="circle"` + `center` + `radius`.
    action="text":     provide `text` for auto-placement,
                       OR `text` + `x` + `y` for manual placement.
    action="freehand": requires `points` (manual path), but cursor advances
@@ -79,6 +80,7 @@ Critical tool-call contract:
    Valid examples:
    - `draw(action="shape", shape="triangle", labels=["a", "b", "c"])`
    - `draw(action="shape", shape="right_triangle", labels=["a", "b", "c"])`
+   - `draw(action="shape", shape="circle", center={"x": 0.4, "y": 0.4}, radius=0.08)`
    - `draw(action="text", text="a² + b² = c²")`
    Invalid examples:
    - `draw(shape="triangle")`

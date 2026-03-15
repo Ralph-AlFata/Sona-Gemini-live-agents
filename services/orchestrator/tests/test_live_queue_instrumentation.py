@@ -35,3 +35,38 @@ def test_infer_function_response_feedback_source() -> None:
 
     source = main._infer_live_request_source(request)
     assert source == "adk_function_response_feedback"
+
+
+def test_instrumented_queue_drops_function_feedback_after_output_finalized() -> None:
+    queue = main.InstrumentedLiveRequestQueue(session_id="s1", turn_id=1)
+    queue.mark_assistant_output_finalized()
+
+    queue.send_content(
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="call-1",
+                        name="draw",
+                        response={"status": "success"},
+                    )
+                )
+            ],
+        ),
+    )
+
+    assert queue._queue.qsize() == 0
+
+
+def test_instrumented_queue_allows_normal_content_after_output_finalized() -> None:
+    queue = main.InstrumentedLiveRequestQueue(session_id="s1", turn_id=1)
+    queue.mark_assistant_output_finalized()
+
+    queue.send_content(
+        types.Content(role="user", parts=[types.Part.from_text(text="new user content")]),
+        source="content",
+    )
+
+    request = __import__("asyncio").run(_drain(queue))
+    assert request.content is not None
