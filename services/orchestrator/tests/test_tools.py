@@ -313,6 +313,12 @@ async def test_set_shape_labels_maps_payload(
     _fake_client: _FakeClient,
 ) -> None:
     monkeypatch.setattr(editing, "resolve_session_id", lambda _ctx: "s_test")
+    async def fake_canvas_element(*, session_id: str, element_id: str) -> dict | None:
+        assert session_id == "s_test"
+        assert element_id == "el_shape"
+        return None
+
+    monkeypatch.setattr(editing, "_fetch_canvas_element", fake_canvas_element)
 
     result = await editing.set_shape_labels(
         element_id="el_shape",
@@ -324,6 +330,38 @@ async def test_set_shape_labels_maps_payload(
     assert _fake_client.calls[0]["operation"] == "set_shape_labels"
     assert _fake_client.calls[0]["payload"]["element_id"] == "el_shape"
     assert _fake_client.calls[0]["payload"]["labels"] == ["a", "", "c"]
+
+
+@pytest.mark.asyncio
+async def test_set_shape_labels_canonicalizes_existing_right_triangle(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(editing, "resolve_session_id", lambda _ctx: "s_test")
+
+    async def fake_canvas_element(*, session_id: str, element_id: str) -> dict | None:
+        assert session_id == "s_test"
+        assert element_id == "el_shape"
+        return {
+            "id": "el_shape",
+            "type": "right_triangle",
+            "points": [
+                {"x": 0.1, "y": 0.5},
+                {"x": 0.4, "y": 0.5},
+                {"x": 0.1, "y": 0.2},
+                {"x": 0.1, "y": 0.5},
+            ],
+        }
+
+    monkeypatch.setattr(editing, "_fetch_canvas_element", fake_canvas_element)
+
+    await editing.set_shape_labels(
+        element_id="el_shape",
+        labels=["3", "4", "5"],
+    )
+
+    assert _fake_client.calls[0]["operation"] == "set_shape_labels"
+    assert _fake_client.calls[0]["payload"]["labels"] == ["3", "5", "4"]
 
 
 @pytest.mark.asyncio
@@ -949,6 +987,56 @@ async def test_canvas_actions_accepts_stringified_action_objects(_fake_client: _
         "set_shape_labels",
         "draw_text",
     ]
+
+
+@pytest.mark.asyncio
+async def test_canvas_actions_accepts_direct_set_shape_labels_tool_alias(
+    _fake_client: _FakeClient,
+) -> None:
+    context = SimpleNamespace(state={"session_id": "s_canvas_actions_alias"})
+
+    response = await unified.canvas_actions(
+        actions=[
+            {"tool": "draw", "action": "shape", "shape": "right_triangle"},
+            {"tool": "set_shape_labels", "element_id": "el_test_1", "labels": ["3", "4", "5"]},
+        ],
+        tool_context=context,
+    )
+
+    assert response["status"] == "success"
+    assert response["completed_actions"] == 2
+    assert [result["operation"] for result in response["results"]] == [
+        "draw_shape",
+        "set_shape_labels",
+    ]
+    assert [call["operation"] for call in _fake_client.calls] == [
+        "draw_shape",
+        "set_shape_labels",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_canvas_actions_returns_error_for_unsupported_tool_without_raising(
+    _fake_client: _FakeClient,
+) -> None:
+    context = SimpleNamespace(state={"session_id": "s_canvas_actions_bad_tool"})
+
+    response = await unified.canvas_actions(
+        actions=[
+            {"tool": "draw", "action": "text", "text": "Before error"},
+            {"tool": "not_a_real_tool", "foo": "bar"},
+            {"tool": "draw", "action": "text", "text": "Should not run"},
+        ],
+        tool_context=context,
+    )
+
+    assert response["status"] == "partial_success"
+    assert response["completed_actions"] == 2
+    assert response["failed_action_index"] == 1
+    assert response["stopped_early"] is True
+    assert response["results"][1]["status"] == "error"
+    assert "unsupported tool" in response["results"][1]["message"]
+    assert len(_fake_client.calls) == 1
 
 
 @pytest.mark.asyncio

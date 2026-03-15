@@ -6,6 +6,7 @@ import logging
 import math
 
 from google.adk.tools import ToolContext
+from pydantic import ValidationError
 
 from agent.tools._cursor import BBox, LEFT_MARGIN, RIGHT_EDGE
 from agent.tools._cursor_store import clear_cursor, get_cursor
@@ -587,25 +588,35 @@ async def highlight_region(
     Invocation condition: Call ONLY when highlighting elements not already
     highlighted. Do not re-highlight the same element_ids with the same type.
     """
-    data = HighlightInput.model_validate(
-        {
-            "element_ids": element_ids or [],
-            "highlight_type": highlight_type,
-            "padding": padding,
-            "style": {
-                "stroke_color": stroke_color,
-                "stroke_width": stroke_width,
-                "fill_color": fill_color,
-                "opacity": opacity,
-                "z_index": z_index,
-                "delay_ms": delay_ms,
-                "animate": animate,
-            },
-            "point_x": point_x,
-            "point_y": point_y,
-            "label": label,
+    payload = {
+        "element_ids": element_ids or [],
+        "highlight_type": highlight_type,
+        "padding": padding,
+        "style": {
+            "stroke_color": stroke_color,
+            "stroke_width": stroke_width,
+            "fill_color": fill_color,
+            "opacity": opacity,
+            "z_index": z_index,
+            "delay_ms": delay_ms,
+            "animate": animate,
+        },
+        "point_x": point_x,
+        "point_y": point_y,
+        "label": label,
+    }
+    try:
+        data = HighlightInput.model_validate(payload)
+    except ValidationError as exc:
+        logger.info("HIGHLIGHT_REGION_VALIDATION_ERROR payload=%r error=%s", payload, exc)
+        return {
+            "status": "error",
+            "operation": "highlight_region",
+            "applied_count": 0,
+            "created_element_ids": [],
+            "failed_operations": [{"element_id": None, "reason": str(exc)}],
+            "highlight_summary": "highlight_region ignored because the arguments were invalid.",
         }
-    )
     result = await execute_tool_command(
         session_id=resolve_session_id(tool_context),
         operation="highlight_region",

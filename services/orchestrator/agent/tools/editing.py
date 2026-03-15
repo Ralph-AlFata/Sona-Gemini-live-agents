@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
+import httpx
 from google.adk.tools import ToolContext
 
+from agent.tools import _canonical
+from agent.tools._auth import get_current_auth_token
 from agent.tools._shared import execute_tool_command, resolve_session_id, result_to_dict
 from agent.tools.models import (
     DeleteElementsInput,
@@ -14,6 +19,73 @@ from agent.tools.models import (
     UpdatePointsInput,
     UpdateStyleInput,
 )
+from config import settings
+
+logger = logging.getLogger(__name__)
+_CANVAS_STATE_TIMEOUT_SECONDS = 2.0
+
+
+async def _fetch_canvas_element(
+    session_id: str,
+    element_id: str,
+) -> dict | None:
+    auth_token = get_current_auth_token()
+    try:
+        async with httpx.AsyncClient(timeout=_CANVAS_STATE_TIMEOUT_SECONDS) as client:
+            response = await client.get(
+                f"{settings.drawing_service_url.rstrip('/')}/sessions/{session_id}/canvas_state",
+                headers=(
+                    {"Authorization": f"Bearer {auth_token}"}
+                    if isinstance(auth_token, str) and auth_token
+                    else None
+                ),
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:
+        logger.warning(
+            "SET_SHAPE_LABELS_CANVAS_FETCH_FAILED session_id=%s element_id=%s error=%r",
+            session_id,
+            element_id,
+            exc,
+        )
+        return None
+
+    elements = payload.get("elements")
+    if not isinstance(elements, list):
+        return None
+
+    for element in elements:
+        if isinstance(element, dict) and str(element.get("id", "")) == element_id:
+            return element
+    return None
+
+
+async def _canonicalize_labels_for_existing_shape(
+    session_id: str,
+    element_id: str,
+    labels: list[str],
+) -> list[str]:
+    element = await _fetch_canvas_element(session_id=session_id, element_id=element_id)
+    if not isinstance(element, dict):
+        return labels
+
+    shape = element.get("type")
+    points = element.get("points")
+    if not isinstance(shape, str) or not isinstance(points, list):
+        return labels
+
+    normalized_points: list[dict[str, float]] = []
+    for point in points:
+        if not isinstance(point, dict):
+            return labels
+        x = point.get("x")
+        y = point.get("y")
+        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            return labels
+        normalized_points.append({"x": float(x), "y": float(y)})
+
+    return _canonical.enforce_canonical_labels(shape, normalized_points, labels)
 
 
 async def delete_elements(element_ids: list[str], tool_context: ToolContext | None = None) -> dict:
@@ -148,15 +220,21 @@ async def set_shape_labels(
     tool_context: ToolContext | None = None,
 ) -> dict:
     """Attach or replace side labels on an existing shape element."""
+    session_id = resolve_session_id(tool_context)
+    canonical_labels = await _canonicalize_labels_for_existing_shape(
+        session_id=session_id,
+        element_id=element_id,
+        labels=labels,
+    )
     data = SetShapeLabelsInput.model_validate(
         {
             "element_id": element_id,
-            "labels": labels,
+            "labels": canonical_labels,
             "font_size": font_size,
         }
     )
     result = await execute_tool_command(
-        session_id=resolve_session_id(tool_context),
+        session_id=session_id,
         operation="set_shape_labels",
         payload=data.model_dump(mode="json"),
     )

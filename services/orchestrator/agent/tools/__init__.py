@@ -14,11 +14,9 @@ from agent.tools.editing import (
 from agent.tools.math_helpers import draw_axes_grid, draw_number_line, mark_graph_intersection, plot_function_2d
 
 # Unified tools plus the single agent-facing batch dispatcher.
-from agent.tools.unified import canvas_actions, draw, edit_canvas, graph, highlight
+from agent.tools.unified import draw, edit_canvas, graph, highlight
 
 __all__ = [
-    # Agent-facing batch tool
-    "canvas_actions",
     # Unified building blocks
     "draw",
     "edit_canvas",
