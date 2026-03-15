@@ -44,8 +44,21 @@ class DrawShapePayload(_StrictBase):
     """
 
     shape: Literal[
-        "rectangle", "ellipse", "circle", "line", "triangle", "right_triangle",
-        "polygon", "square",
+        "rectangle",
+        "ellipse",
+        "circle",
+        "line",
+        "triangle",
+        "right_triangle",
+        "polygon",
+        "square",
+        "rhombus",
+        "parallelogram",
+        "trapezoid",
+        "pentagon",
+        "hexagon",
+        "octagon",
+        "number_line",
     ]
     points: list[Point] = Field(min_length=2)
     style: StylePayload = Field(default_factory=StylePayload)
@@ -269,6 +282,7 @@ class DrawCommandRequest(_StrictBase):
     session_id: str = Field(min_length=1, max_length=128)
     payload: DrawPayload
     element_id: str | None = Field(default=None, min_length=1, max_length=128)
+    source: Literal["ai", "user"] = "ai"
 
     @model_validator(mode="before")
     @classmethod
@@ -348,7 +362,25 @@ class SessionElementSnapshot(_StrictBase):
     session_id: str
     element_id: str
     element_type: str
+    source: Literal["ai", "user"] = "ai"
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CanvasStateElement(_StrictBase):
+    id: str
+    type: str
+    source: Literal["ai", "user"] = "ai"
+    points: list[Point] = Field(default_factory=list)
+    labels: list[str] = Field(default_factory=list)
+    text: str | None = None
+    style: dict[str, Any] = Field(default_factory=dict)
+    bbox: dict[str, float] = Field(default_factory=dict)
+
+
+class CanvasStateResponse(_StrictBase):
+    session_id: str
+    element_count: int = Field(ge=0)
+    elements: list[CanvasStateElement] = Field(default_factory=list)
 
 
 class ClearRequest(_StrictBase):

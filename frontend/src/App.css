@@ -485,6 +485,129 @@
   min-height: 0;
   border-right: 1px solid #dbe2ef;
   background: #fefefe;
+  position: relative;
+}
+
+.drawing-toolbar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  width: min(92vw, 760px);
+  border-radius: 14px;
+  background: rgba(255, 252, 246, 0.96);
+  border: 1px solid rgba(212, 197, 168, 0.9);
+  box-shadow: 0 10px 24px rgba(27, 39, 58, 0.1);
+  backdrop-filter: blur(14px);
+  touch-action: none;
+}
+
+.drawing-toolbar.dragging {
+  box-shadow: 0 16px 32px rgba(27, 39, 58, 0.18);
+}
+
+.drawing-toolbar.collapsed {
+  width: auto;
+  min-width: 150px;
+}
+
+.drawing-toolbar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: grab;
+  user-select: none;
+}
+
+.drawing-toolbar.dragging .drawing-toolbar-header {
+  cursor: grabbing;
+}
+
+.drawing-toolbar-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #4d3f29;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.drawing-toolbar-grip {
+  font-size: 14px;
+  letter-spacing: -1px;
+  color: #8a7350;
+}
+
+.drawing-toolbar-toggle {
+  border: 1px solid rgba(149, 123, 79, 0.28);
+  background: rgba(255, 255, 255, 0.72);
+  color: #4d3f29;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#drawing-toolbar-body {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 5px;
+}
+
+.drawing-tool-btn {
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #4d3f29;
+  min-width: 50px;
+  padding: 5px 6px 4px;
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  cursor: pointer;
+}
+
+.drawing-tool-btn.active {
+  background: #1f2937;
+  color: #fff9ef;
+}
+
+.drawing-tool-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.drawing-tool-label {
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.drawing-tool-shortcut {
+  font-size: 8px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: rgba(95, 80, 48, 0.14);
+}
+
+.drawing-tool-btn.active .drawing-tool-shortcut {
+  background: rgba(255, 249, 239, 0.22);
+}
+
+@media (max-width: 720px) {
+  .drawing-toolbar {
+    width: min(calc(100% - 20px), 420px);
+  }
 }
 
 .canvas-empty {

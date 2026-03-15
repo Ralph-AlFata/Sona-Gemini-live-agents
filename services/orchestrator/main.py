@@ -17,12 +17,13 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
-from google.adk.agents.live_request_queue import LiveRequestQueue
+from google.adk.agents.live_request_queue import LiveRequest, LiveRequestQueue
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from agent.canvas_context import build_canvas_turn_content
 from agent.tools._cursor_store import (
     set_cursor as set_cursor_from_snapshot,
     update_cursor_viewport,
@@ -46,7 +47,178 @@ UPSTREAM_AUDIO_LOG_EVERY_N_CHUNKS = 25
 STOP_TURN_DRAIN_TIMEOUT_SECONDS = 0.75
 DOWNSTREAM_AUDIO_EVENT_LOG_EVERY_N_EVENTS = 50
 UPSTREAM_MAX_BUFFERED_AUDIO_BYTES = 10 * 1024 * 1024
-ALLOW_BARGE_IN_INTERRUPT = False
+ALLOW_BARGE_IN_INTERRUPT = True
+
+
+def _truncate_for_log(value: str, limit: int = 120) -> str:
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}..."
+
+
+def _summarize_content_for_log(content: types.Content | None) -> str:
+    if content is None or not content.parts:
+        return "empty"
+
+    fragments: list[str] = []
+    for part in content.parts:
+        function_response = getattr(part, "function_response", None)
+        if function_response is not None:
+            fragments.append(
+                f"function_response:{getattr(function_response, 'name', '?')}"
+            )
+            continue
+
+        function_call = getattr(part, "function_call", None)
+        if function_call is not None:
+            fragments.append(f"function_call:{getattr(function_call, 'name', '?')}")
+            continue
+
+        text = getattr(part, "text", None)
+        if isinstance(text, str) and text.strip():
+            fragments.append(f"text:{_truncate_for_log(text.strip())}")
+            continue
+
+        inline_data = getattr(part, "inline_data", None)
+        if inline_data is not None:
+            mime_type = getattr(inline_data, "mime_type", None)
+            if isinstance(mime_type, str) and mime_type:
+                fragments.append(f"inline:{mime_type}")
+                continue
+
+        fragments.append(type(part).__name__)
+
+    return "|".join(fragments[:4])
+
+
+def _infer_live_request_source(
+    request: LiveRequest,
+    explicit_source: str | None = None,
+) -> str:
+    if explicit_source:
+        return explicit_source
+    if request.close:
+        return "queue_close"
+    if request.activity_start is not None:
+        return "activity_start"
+    if request.activity_end is not None:
+        return "activity_end"
+    if request.blob is not None:
+        return "realtime_audio"
+    if request.content is not None and request.content.parts:
+        for part in request.content.parts:
+            if getattr(part, "function_response", None) is not None:
+                return "adk_function_response_feedback"
+            if getattr(part, "function_call", None) is not None:
+                return "function_call_content"
+        return "content"
+    return "unknown"
+
+
+@dataclass(slots=True)
+class _LiveRequestMeta:
+    sequence: int
+    source: str
+    summary: str
+
+
+class InstrumentedLiveRequestQueue(LiveRequestQueue):
+    """LiveRequestQueue with enqueue/dequeue logging for hidden ADK traffic."""
+
+    def __init__(self, *, session_id: str, turn_id: int) -> None:
+        super().__init__()
+        self._session_id = session_id
+        self._turn_id = turn_id
+        self._sequence = 0
+        self._meta_queue: asyncio.Queue[_LiveRequestMeta] = asyncio.Queue()
+
+    def _log_enqueue(self, request: LiveRequest, source: str) -> None:
+        self._sequence += 1
+        effective_turn_complete = (
+            request.turn_complete if request.content is not None else None
+        )
+        if request.content is not None and effective_turn_complete is None:
+            effective_turn_complete = True
+        summary = _summarize_content_for_log(request.content)
+        self._meta_queue.put_nowait(
+            _LiveRequestMeta(
+                sequence=self._sequence,
+                source=source,
+                summary=summary,
+            )
+        )
+        logger.info(
+            "LIVE_QUEUE_ENQUEUE session_id=%s turn_id=%s seq=%s source=%s close=%s has_content=%s has_blob=%s activity_start=%s activity_end=%s turn_complete=%s summary=%s",
+            self._session_id,
+            self._turn_id,
+            self._sequence,
+            source,
+            request.close,
+            request.content is not None,
+            request.blob is not None,
+            request.activity_start is not None,
+            request.activity_end is not None,
+            effective_turn_complete,
+            summary,
+        )
+
+    def close(self, source: str | None = None):
+        request = LiveRequest(close=True)
+        self._log_enqueue(request, _infer_live_request_source(request, source))
+        self._queue.put_nowait(request)
+
+    def send_content(
+        self,
+        content: types.Content,
+        turn_complete: bool = True,
+        source: str | None = None,
+    ):
+        request = LiveRequest(content=content, turn_complete=turn_complete)
+        self._log_enqueue(request, _infer_live_request_source(request, source))
+        self._queue.put_nowait(request)
+
+    def send_realtime(self, blob: types.Blob, source: str | None = None):
+        request = LiveRequest(blob=blob)
+        self._log_enqueue(request, _infer_live_request_source(request, source))
+        self._queue.put_nowait(request)
+
+    def send_activity_start(self, source: str | None = None):
+        request = LiveRequest(activity_start=types.ActivityStart())
+        self._log_enqueue(request, _infer_live_request_source(request, source))
+        self._queue.put_nowait(request)
+
+    def send_activity_end(self, source: str | None = None):
+        request = LiveRequest(activity_end=types.ActivityEnd())
+        self._log_enqueue(request, _infer_live_request_source(request, source))
+        self._queue.put_nowait(request)
+
+    def send(self, req: LiveRequest, source: str | None = None):
+        self._log_enqueue(req, _infer_live_request_source(req, source))
+        self._queue.put_nowait(req)
+
+    async def get(self) -> LiveRequest:
+        request = await self._queue.get()
+        meta = await self._meta_queue.get()
+        effective_turn_complete = (
+            request.turn_complete if request.content is not None else None
+        )
+        if request.content is not None and effective_turn_complete is None:
+            effective_turn_complete = True
+        logger.info(
+            "LIVE_QUEUE_DEQUEUE session_id=%s turn_id=%s seq=%s source=%s close=%s has_content=%s has_blob=%s activity_start=%s activity_end=%s turn_complete=%s summary=%s",
+            self._session_id,
+            self._turn_id,
+            meta.sequence,
+            meta.source,
+            request.close,
+            request.content is not None,
+            request.blob is not None,
+            request.activity_start is not None,
+            request.activity_end is not None,
+            effective_turn_complete,
+            meta.summary,
+        )
+        return request
 
 
 def _sanitize_event_for_log(value: Any) -> Any:
@@ -432,6 +604,8 @@ async def websocket_endpoint(
     pending_persist_tasks: set[asyncio.Task[None]] = set()
     persisted_turn_keys: set[tuple[int, Literal["student", "sona"], str]] = set()
     turn_draw_activity: dict[int, dict[str, Any]] = {}
+    pending_assistant_transcripts: dict[int, str] = {}
+    canvas_snapshot_bytes: bytes | None = None
 
     def _track_persist_task(task: asyncio.Task[None]) -> None:
         pending_persist_tasks.add(task)
@@ -566,12 +740,32 @@ async def websocket_endpoint(
     async def start_new_turn(
         trigger: str,
     ) -> LiveRequestQueue:
-        nonlocal turn_counter, live_request_queue, live_task
+        nonlocal turn_counter, live_request_queue, live_task, canvas_snapshot_bytes
         await stop_current_turn(reason=f"restart_for_{trigger}", wait_for_drain=False)
 
         turn_counter += 1
         turn_id = turn_counter
-        queue = LiveRequestQueue()
+        queue = InstrumentedLiveRequestQueue(session_id=session_id, turn_id=turn_id)
+        canvas_content = await build_canvas_turn_content(
+            session_id,
+            settings.drawing_service_url,
+            canvas_snapshot_bytes,
+            bearer_token,
+        )
+        if canvas_content is not None:
+            queue.send_content(
+                canvas_content,
+                turn_complete=False,
+                source="canvas_context",
+            )
+            logger.info(
+                "LIVE_CANVAS_CONTEXT_SENT session_id=%s turn_id=%s has_snapshot=%s has_description=%s",
+                session_id,
+                turn_id,
+                canvas_snapshot_bytes is not None,
+                len(canvas_content.parts) > (1 if canvas_snapshot_bytes else 0),
+            )
+        canvas_snapshot_bytes = None
 
         async def downstream_for_turn(active_queue: LiveRequestQueue, active_turn_id: int) -> None:
             nonlocal event_index, live_request_queue, live_task
@@ -614,27 +808,35 @@ async def websocket_endpoint(
                             event_payload.get("outputTranscription")
                         )
                         if assistant_text:
-                            draw_activity = turn_draw_activity.pop(active_turn_id, None)
-                            metadata = (
-                                draw_activity
-                                if draw_activity
-                                and (
-                                    draw_activity["draw_command_requests"]
-                                    or draw_activity["dsl_messages"]
-                                    or isinstance(draw_activity.get("cursor_state"), dict)
-                                )
-                                else None
+                            pending_assistant_transcripts[active_turn_id] = assistant_text
+
+                        if event_payload.get("turnComplete") is True:
+                            final_assistant_text = pending_assistant_transcripts.pop(
+                                active_turn_id,
+                                None,
                             )
-                            _track_persist_task(
-                                asyncio.create_task(
-                                    persist_turn(
-                                        turn_id=active_turn_id,
-                                        role="sona",
-                                        content=assistant_text,
-                                        metadata=metadata,
+                            if final_assistant_text:
+                                draw_activity = turn_draw_activity.pop(active_turn_id, None)
+                                metadata = (
+                                    draw_activity
+                                    if draw_activity
+                                    and (
+                                        draw_activity["draw_command_requests"]
+                                        or draw_activity["dsl_messages"]
+                                        or isinstance(draw_activity.get("cursor_state"), dict)
+                                    )
+                                    else None
+                                )
+                                _track_persist_task(
+                                    asyncio.create_task(
+                                        persist_turn(
+                                            turn_id=active_turn_id,
+                                            role="sona",
+                                            content=final_assistant_text,
+                                            metadata=metadata,
+                                        )
                                     )
                                 )
-                            )
 
                         text_parts = _extract_text_parts(event_payload)
                         is_audio_only = _is_audio_only_event(event_payload)
@@ -696,6 +898,7 @@ async def websocket_endpoint(
                     exc,
                 )
             finally:
+                pending_assistant_transcripts.pop(active_turn_id, None)
                 turn_draw_activity.pop(active_turn_id, None)
                 async with turn_state_lock:
                     if live_request_queue is active_queue:
@@ -815,15 +1018,16 @@ async def websocket_endpoint(
                         )
                         continue
                     queue = await start_new_turn(trigger="activity_end")
-                    queue.send_activity_start()
+                    queue.send_activity_start(source="browser_activity_end_flush")
                     for chunk in buffered_audio_chunks:
                         queue.send_realtime(
                             types.Blob(
                                 mime_type="audio/pcm;rate=16000",
                                 data=chunk,
-                            )
+                            ),
+                            source="browser_audio_flush",
                         )
-                    queue.send_activity_end()
+                    queue.send_activity_end(source="browser_activity_end_flush")
                     logger.info(
                         "LIVE_ACTIVITY_AUDIO_FLUSH session_id=%s chunks=%s bytes=%s",
                         session_id,
@@ -868,6 +1072,28 @@ async def websocket_endpoint(
                         int(width),
                         int(height),
                         cursor.to_snapshot_dict().get("bottom_edge"),
+                    )
+
+                elif msg_type == "snapshot":
+                    raw_data = json_message.get("data")
+                    if not isinstance(raw_data, str) or not raw_data.strip():
+                        logger.warning(
+                            "LIVE_CANVAS_SNAPSHOT_INVALID session_id=%s reason=missing_data",
+                            session_id,
+                        )
+                        continue
+                    try:
+                        canvas_snapshot_bytes = base64.b64decode(raw_data)
+                    except Exception:
+                        logger.warning(
+                            "LIVE_CANVAS_SNAPSHOT_INVALID session_id=%s reason=decode_failed",
+                            session_id,
+                        )
+                        continue
+                    logger.info(
+                        "CANVAS_SNAPSHOT_RECEIVED session_id=%s size=%d",
+                        session_id,
+                        len(canvas_snapshot_bytes),
                     )
 
     try:

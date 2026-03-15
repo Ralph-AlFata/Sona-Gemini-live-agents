@@ -17,6 +17,12 @@ from drawing_client import DrawingClient, DrawingCommandResult
 _client: DrawingClient | None = None
 _deduplicator: ToolCallDeduplicator | None = None
 logger = logging.getLogger(__name__)
+_DEDUP_NOTICE = (
+    "This exact tool call was ALREADY successful earlier. "
+    "DO NOT call the same tool again with the same arguments. "
+    "Proceed as if the earlier tool call already completed. "
+    "Do not repeat the same narration, redraw, or follow-up for this duplicate call."
+)
 
 
 def get_client() -> DrawingClient:
@@ -45,7 +51,7 @@ def resolve_session_id(tool_context: ToolContext | None) -> str:
 
 
 def result_to_dict(result: DrawingCommandResult) -> dict:
-    return {
+    response = {
         "status": "success",
         "operation": result.operation,
         "command_id": result.command_id,
@@ -53,6 +59,12 @@ def result_to_dict(result: DrawingCommandResult) -> dict:
         "created_element_ids": result.created_element_ids,
         "failed_operations": result.failed_operations,
     }
+    if result.deduplicated:
+        response["deduplicated"] = True
+        response["already_completed"] = True
+        response["message"] = result.dedup_notice or _DEDUP_NOTICE
+        response["previous_command_id"] = result.prior_command_id or result.command_id
+    return response
 
 
 def _payload_preview(payload: dict) -> str:
@@ -70,24 +82,24 @@ async def execute_tool_command(
     dedup = _get_deduplicator()
     cached = await dedup.get(session_id, operation, payload)
     if cached is not None:
-        emit_draw_trace(
-            {
-                "draw_command_request": {
-                    "command_id": cached.command_id,
-                    "operation": operation,
-                    "session_id": session_id,
-                    "payload": payload,
-                },
-                "dsl_messages": cached.dsl_messages,
-            }
-        )
         logger.warning(
             "TOOL_CALL_DEDUP session_id=%s operation=%s payload=%s",
             session_id,
             operation,
             _payload_preview(payload),
         )
-        return cached
+        return DrawingCommandResult(
+            session_id=session_id,
+            command_id=cached.command_id,
+            operation=operation,
+            applied_count=0,
+            created_element_ids=list(cached.created_element_ids),
+            failed_operations=[],
+            emitted_count=0,
+            deduplicated=True,
+            dedup_notice=_DEDUP_NOTICE,
+            prior_command_id=cached.command_id,
+        )
 
     logger.info(
         "TOOL_CALL_EXEC session_id=%s operation=%s payload=%s",

@@ -55,3 +55,27 @@ async def test_execute_tool_command_emits_trace_event(
     assert event["draw_command_request"]["operation"] == "draw_text"
     assert event["draw_command_request"]["session_id"] == "s_trace"
     assert event["dsl_messages"][0]["type"] == "element_created"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_command_dedup_hit_does_not_emit_trace_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_shared, "_client", _FakeClient())
+    monkeypatch.setattr(_shared, "_deduplicator", None)
+
+    events: list[dict] = []
+    with draw_trace_span(lambda event: events.append(event)):
+        await _shared.execute_tool_command(
+            session_id="s_trace",
+            operation="draw_text",
+            payload={"text": "hello", "x": 0.1, "y": 0.1, "font_size": 24, "style": {}},
+        )
+        dedup_result = await _shared.execute_tool_command(
+            session_id="s_trace",
+            operation="draw_text",
+            payload={"text": "hello", "x": 0.1, "y": 0.1, "font_size": 24, "style": {}},
+        )
+
+    assert dedup_result.deduplicated is True
+    assert len(events) == 1

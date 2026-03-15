@@ -1,15 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { Stage, Layer, Rect, Text, Line, Shape, Group } from "react-konva";
 import type { Stage as KonvaStage } from "konva/lib/Stage";
+import { DrawingToolbar } from "./DrawingToolbar";
+import {
+  useDrawingTool,
+  type DraftShape,
+  type DrawingTool,
+  type PointNorm,
+} from "../hooks/useDrawingTool";
 import type { DSLMessageRaw } from "../services/drawingSocket";
-import { sendCanvasMetrics } from "../services/orchestratorLive";
-import { postDraw, type SessionElementSnapshot } from "../services/drawingService";
+import { sendCanvasMetrics, sendCanvasSnapshot } from "../services/orchestratorLive";
+import {
+  deleteElement,
+  postDraw,
+  type SessionElementSnapshot,
+} from "../services/drawingService";
 import getStroke from "perfect-freehand";
-
-interface PointNorm {
-  x: number;
-  y: number;
-}
 
 interface NormalizedBBox {
   x: number;
@@ -52,6 +58,7 @@ interface TextItem {
   y: number;
   fontSize: number;
   color: string;
+  source: "ai" | "user";
 }
 
 interface StrokeItem {
@@ -60,7 +67,7 @@ interface StrokeItem {
   points: PointNorm[];
   color: string;
   strokeWidth: number;
-  owner: "user" | "agent";
+  source: "ai" | "user";
   elementType: "freehand" | "shape";
   renderMode?: "freehand" | "polyline";
   clipRect?: ClipRect;
@@ -79,6 +86,7 @@ interface HighlightItem {
   width: number;
   height: number;
   color: string;
+  source: "ai" | "user";
   targetElementIds?: string[];
   padding?: number;
 }
@@ -88,6 +96,7 @@ interface WhiteboardProps {
   initialElements: SessionElementSnapshot[];
   sessionId: string;
   authToken: string;
+  onSnapshotExporterChange?: (exporter: (() => Promise<void>) | null) => void;
 }
 
 const HANDWRITING_FONT = '"Patrick Hand", "Comic Sans MS", cursive';
@@ -253,6 +262,170 @@ function computeFreehandPath(
   return getSvgPathFromStroke(outlinePoints);
 }
 
+function regularPolygonPoints(
+  sides: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): PointNorm[] {
+  const cx = (x1 + x2) / 2;
+  const cy = (y1 + y2) / 2;
+  const rx = Math.max((x2 - x1) / 2, 0.001);
+  const ry = Math.max((y2 - y1) / 2, 0.001);
+  const points: PointNorm[] = [];
+  for (let i = 0; i <= sides; i++) {
+    const theta = (2 * Math.PI * i) / sides - Math.PI / 2;
+    points.push({
+      x: cx + rx * Math.cos(theta),
+      y: cy + ry * Math.sin(theta),
+    });
+  }
+  return points;
+}
+
+function squareBounds(x1: number, y1: number, x2: number, y2: number) {
+  const width = x2 - x1;
+  const height = y2 - y1;
+  const size = Math.min(Math.abs(width), Math.abs(height));
+  return {
+    x1,
+    y1,
+    x2: x1 + Math.sign(width || 1) * size,
+    y2: y1 + Math.sign(height || 1) * size,
+  };
+}
+
+function buildShapePreviewPoints(tool: DraftShape["tool"], start: PointNorm, end: PointNorm): PointNorm[] {
+  const x1 = Math.min(start.x, end.x);
+  const x2 = Math.max(start.x, end.x);
+  const y1 = Math.min(start.y, end.y);
+  const y2 = Math.max(start.y, end.y);
+
+  switch (tool) {
+    case "rectangle":
+      return [
+        { x: x1, y: y1 },
+        { x: x2, y: y1 },
+        { x: x2, y: y2 },
+        { x: x1, y: y2 },
+        { x: x1, y: y1 },
+      ];
+    case "square": {
+      const bounds = squareBounds(start.x, start.y, end.x, end.y);
+      return [
+        { x: bounds.x1, y: bounds.y1 },
+        { x: bounds.x2, y: bounds.y1 },
+        { x: bounds.x2, y: bounds.y2 },
+        { x: bounds.x1, y: bounds.y2 },
+        { x: bounds.x1, y: bounds.y1 },
+      ];
+    }
+    case "triangle":
+      return [
+        { x: x1, y: y2 },
+        { x: (x1 + x2) / 2, y: y1 },
+        { x: x2, y: y2 },
+        { x: x1, y: y2 },
+      ];
+    case "right_triangle":
+      return [
+        { x: x1, y: y2 },
+        { x: x2, y: y2 },
+        { x: x1, y: y1 },
+        { x: x1, y: y2 },
+      ];
+    case "circle": {
+      const bounds = squareBounds(start.x, start.y, end.x, end.y);
+      return regularPolygonPoints(
+        32,
+        Math.min(bounds.x1, bounds.x2),
+        Math.min(bounds.y1, bounds.y2),
+        Math.max(bounds.x1, bounds.x2),
+        Math.max(bounds.y1, bounds.y2),
+      );
+    }
+    case "rhombus": {
+      const cx = (x1 + x2) / 2;
+      const cy = (y1 + y2) / 2;
+      return [
+        { x: cx, y: y1 },
+        { x: x2, y: cy },
+        { x: cx, y: y2 },
+        { x: x1, y: cy },
+        { x: cx, y: y1 },
+      ];
+    }
+    case "parallelogram": {
+      const inset = Math.max((x2 - x1) * 0.18, 0.01);
+      return [
+        { x: x1 + inset, y: y1 },
+        { x: x2, y: y1 },
+        { x: x2 - inset, y: y2 },
+        { x: x1, y: y2 },
+        { x: x1 + inset, y: y1 },
+      ];
+    }
+    case "trapezoid": {
+      const inset = Math.max((x2 - x1) * 0.22, 0.01);
+      return [
+        { x: x1 + inset, y: y1 },
+        { x: x2 - inset, y: y1 },
+        { x: x2, y: y2 },
+        { x: x1, y: y2 },
+        { x: x1 + inset, y: y1 },
+      ];
+    }
+    case "pentagon":
+      return regularPolygonPoints(5, x1, y1, x2, y2);
+    case "hexagon":
+      return regularPolygonPoints(6, x1, y1, x2, y2);
+    case "octagon":
+      return regularPolygonPoints(8, x1, y1, x2, y2);
+    case "number_line": {
+      const cy = (y1 + y2) / 2;
+      return [{ x: x1, y: cy }, { x: x2, y: cy }];
+    }
+    case "line":
+      return [start, end];
+    default:
+      return [start, end];
+  }
+}
+
+function renderDraftShape(draftShape: DraftShape, widthPx: number) {
+  if (draftShape.tool === "freehand") {
+    const ghostPath = computeFreehandPath(draftShape.points, widthPx, 3);
+    if (!ghostPath) return null;
+    return (
+      <Shape
+        sceneFunc={(ctx, shape) => {
+          const path = new Path2D(ghostPath);
+          ctx._context.fillStyle = "rgba(17, 24, 39, 0.7)";
+          ctx._context.fill(path);
+          ctx.fillStrokeShape(shape);
+        }}
+      />
+    );
+  }
+
+  if (draftShape.points.length < 2) return null;
+  const [start, end] = draftShape.points;
+  if (!start || !end) return null;
+  const previewPoints = buildShapePreviewPoints(draftShape.tool, start, end);
+  return (
+    <Line
+      points={previewPoints.flatMap((point) => [point.x * widthPx, point.y * widthPx])}
+      stroke="#2563eb"
+      strokeWidth={2}
+      dash={[6, 4]}
+      lineCap="round"
+      lineJoin="round"
+      listening={false}
+    />
+  );
+}
+
 function toPointNorm(value: unknown): PointNorm | null {
   if (!value || typeof value !== "object") return null;
   const maybeX = asNumber((value as Record<string, unknown>)["x"], NaN);
@@ -314,7 +487,13 @@ function toGraphViewport(value: unknown): GraphViewport | null {
   };
 }
 
-export function Whiteboard({ messages, initialElements, sessionId, authToken }: WhiteboardProps) {
+export function Whiteboard({
+  messages,
+  initialElements,
+  sessionId,
+  authToken,
+  onSnapshotExporterChange,
+}: WhiteboardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<KonvaStage | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
@@ -322,22 +501,26 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
   const [strokes, setStrokes] = useState<StrokeItem[]>([]);
   const [highlights, setHighlights] = useState<HighlightItem[]>([]);
   const [graphViewport, setGraphViewport] = useState<GraphViewport | null>(null);
-  const [localStroke, setLocalStroke] = useState<PointNorm[]>([]);
-  const [toolMode, setToolMode] = useState<"draw" | "delete" | "select">("draw");
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
+  const [toolbarPosition, setToolbarPosition] = useState({ x: 0, y: 10 });
+  const toolbarPositionInitializedRef = useRef(false);
   const queueRef = useRef<DSLMessageRaw[]>([]);
   const processedCountRef = useRef(0);
   const processingRef = useRef(false);
   const unmountedRef = useRef(false);
-  const isDrawingRef = useRef(false);
-  const localPointsRef = useRef<PointNorm[]>([]);
   const measurementCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  // Select/drag state
-  const dragStartRef = useRef<PointNorm | null>(null);
-  const isDraggingRef = useRef(false);
+  const dirtyRef = useRef(false);
 
   function clamp01(value: number): number {
     return Math.max(0, Math.min(1, value));
+  }
+
+  function clampToolbarPosition(position: { x: number; y: number }) {
+    return {
+      x: Math.max(0, Math.min(position.x, Math.max(0, dimensions.width - 180))),
+      y: Math.max(0, Math.min(position.y, Math.max(0, dimensions.height - 60))),
+    };
   }
 
   function getStrokeBBox(stroke: StrokeItem): NormalizedBBox | null {
@@ -504,67 +687,77 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
     };
   }
 
-  function isFarEnough(nextPoint: PointNorm): boolean {
-    const previous = localPointsRef.current[localPointsRef.current.length - 1];
-    if (!previous) return true;
-    const dx = nextPoint.x - previous.x;
-    const dy = nextPoint.y - previous.y;
-    return Math.sqrt(dx * dx + dy * dy) >= 0.0015;
+  function markCanvasDirty(): void {
+    dirtyRef.current = true;
   }
 
-  function handleMouseDown(): void {
-    const point = getNormalizedPointer();
-    if (!point) return;
+  function pointHitsBox(point: PointNorm, box: NormalizedBBox, padding = 0.01): boolean {
+    const x1 = box.x - padding;
+    const y1 = box.y - padding;
+    const x2 = box.x + box.width + padding;
+    const y2 = box.y + box.height + padding;
+    return point.x >= x1 && point.x <= x2 && point.y >= y1 && point.y <= y2;
+  }
 
-    if (toolMode === "draw") {
-      isDrawingRef.current = true;
-      localPointsRef.current = [point];
-      setLocalStroke([point]);
-    } else if (toolMode === "select" && selectedElementId) {
-      // Begin drag
-      dragStartRef.current = point;
-      isDraggingRef.current = true;
+  function resolveElementAt(point: PointNorm): string | null {
+    const candidateBoxes: Array<{ elementId: string; bbox: NormalizedBBox }> = [];
+    for (const stroke of strokes) {
+      const bbox = getStrokeBBox(stroke);
+      if (bbox) candidateBoxes.push({ elementId: stroke.elementId, bbox });
     }
-  }
-
-  function handleMouseMove(): void {
-    if (toolMode === "draw" && isDrawingRef.current) {
-      const point = getNormalizedPointer();
-      if (!point || !isFarEnough(point)) return;
-      const next = [...localPointsRef.current, point];
-      localPointsRef.current = next;
-      setLocalStroke(next);
+    for (const text of textItems) {
+      const bbox = getTextBBox(text);
+      if (bbox) candidateBoxes.push({ elementId: text.elementId, bbox });
     }
+    for (const highlight of highlights) {
+      candidateBoxes.push({ elementId: highlight.elementId, bbox: getHighlightBBox(highlight) });
+    }
+    for (let index = candidateBoxes.length - 1; index >= 0; index--) {
+      const candidate = candidateBoxes[index];
+      if (candidate && pointHitsBox(point, candidate.bbox)) {
+        return candidate.elementId;
+      }
+    }
+    return null;
   }
 
-  function handleMouseUp(): void {
-    if (toolMode === "draw") {
-      if (!isDrawingRef.current) return;
-      isDrawingRef.current = false;
-      const points = localPointsRef.current;
-      localPointsRef.current = [];
-      setLocalStroke([]);
-      if (points.length < 2) return;
-      const elementId = `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-      const svgPath = computeFreehandPath(points, dimensions.width, 3);
-      setStrokes((prev) => [
-        ...prev,
-        {
-          id: `user-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-          elementId,
-          points,
-          color: "#111",
-          strokeWidth: 2,
-          owner: "user",
-          elementType: "freehand",
-          svgPath,
+  async function createTextAt(point: PointNorm): Promise<void> {
+    const text = window.prompt("Enter text");
+    if (!text || !text.trim()) return;
+    markCanvasDirty();
+    await postDraw(
+      sessionId,
+      "draw_text",
+      {
+        text: text.trim(),
+        x: point.x,
+        y: point.y,
+        font_size: 24,
+        style: {
+          stroke_color: "#111111",
+          stroke_width: 1,
+          delay_ms: 0,
+          animate: false,
         },
-      ]);
-      void postDraw(
+      },
+      authToken,
+      { source: "user" },
+    );
+  }
+
+  async function createShapeFromTool(
+    tool: Exclude<DrawingTool, "select" | "text" | "eraser">,
+    points: PointNorm[],
+  ): Promise<void> {
+    if (points.length < 2) return;
+    markCanvasDirty();
+    if (tool === "freehand") {
+      await postDraw(
         sessionId,
         "draw_freehand",
         {
           points,
+          render_mode: "freehand",
           style: {
             stroke_color: "#111111",
             stroke_width: 2,
@@ -573,40 +766,143 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
           },
         },
         authToken,
-        { elementId },
-      ).catch(() => {
-        // Keep optimistic local stroke even if persistence fails.
-      });
-    } else if (toolMode === "select" && isDraggingRef.current && selectedElementId) {
-      const end = getNormalizedPointer();
-      const start = dragStartRef.current;
-      if (end && start) {
-        const dx = end.x - start.x;
-        const dy = end.y - start.y;
-        if (Math.abs(dx) > 0.002 || Math.abs(dy) > 0.002) {
-          void postDraw(sessionId, "move_elements", {
-            element_ids: [selectedElementId],
-            dx,
-            dy,
-          }, authToken);
-        }
-      }
-      isDraggingRef.current = false;
-      dragStartRef.current = null;
+        { source: "user" },
+      );
+      return;
     }
-  }
 
-  function handleDeleteStroke(strokeId: string): void {
-    if (toolMode !== "delete") return;
-    setStrokes((prev) =>
-      prev.filter((stroke) => !(stroke.id === strokeId && stroke.owner === "user")),
+    const [start, end] = points;
+    if (!start || !end) return;
+    if (tool === "number_line") {
+      const x1 = Math.min(start.x, end.x);
+      const x2 = Math.max(start.x, end.x);
+      const y = (start.y + end.y) / 2;
+      const minValue = -5;
+      const maxValue = 5;
+      const count = maxValue - minValue;
+      const step = (x2 - x1) / count;
+      const tickHeight = 0.04;
+
+      await postDraw(
+        sessionId,
+        "draw_shape",
+        {
+          shape: "number_line",
+          points: [{ x: x1, y }, { x: x2, y }],
+          style: {
+            stroke_color: "#111111",
+            stroke_width: 2,
+            delay_ms: 0,
+            animate: false,
+          },
+        },
+        authToken,
+        { source: "user" },
+      );
+
+      for (let i = 0; i <= count; i++) {
+        const value = minValue + i;
+        const tx = x1 + i * step;
+        await postDraw(
+          sessionId,
+          "draw_shape",
+          {
+            shape: "line",
+            points: [
+              { x: tx, y: y - tickHeight / 2 },
+              { x: tx, y: y + tickHeight / 2 },
+            ],
+            style: {
+              stroke_color: "#111111",
+              stroke_width: 2,
+              delay_ms: 0,
+              animate: false,
+            },
+          },
+          authToken,
+          { source: "user" },
+        );
+        await postDraw(
+          sessionId,
+          "draw_text",
+          {
+            text: String(value),
+            x: Math.max(0, tx - 0.01),
+            y: Math.min(1.95, y + 0.015),
+            font_size: 14,
+            style: {
+              stroke_color: "#111111",
+              stroke_width: 1,
+              delay_ms: 0,
+              animate: false,
+            },
+          },
+          authToken,
+          { source: "user" },
+        );
+      }
+      return;
+    }
+
+    const drawPoints = buildShapePreviewPoints(tool, start, end);
+    const shape =
+      tool === "line"
+        ? "line"
+        : tool;
+
+    await postDraw(
+      sessionId,
+      "draw_shape",
+      {
+        shape,
+        points: drawPoints,
+        style: {
+          stroke_color: "#111111",
+          stroke_width: 2,
+          delay_ms: 0,
+          animate: false,
+        },
+      },
+      authToken,
+      { source: "user" },
     );
   }
 
-  function handleSelectStroke(elementId: string): void {
-    if (toolMode !== "select") return;
-    setSelectedElementId((prev) => (prev === elementId ? null : elementId));
+  async function moveSelectedElement(elementId: string, dx: number, dy: number): Promise<void> {
+    if (!elementId) return;
+    markCanvasDirty();
+    await postDraw(
+      sessionId,
+      "move_elements",
+      { element_ids: [elementId], dx, dy },
+      authToken,
+      { source: "user" },
+    );
   }
+
+  async function deleteSelectedElement(elementId: string): Promise<void> {
+    if (!elementId) return;
+    markCanvasDirty();
+    await deleteElement(sessionId, elementId, authToken);
+  }
+
+  const {
+    activeTool,
+    setActiveTool,
+    draftShape,
+    handlePointerDown,
+    handlePointerMove,
+    handlePointerUp,
+  } = useDrawingTool({
+    getPointer: getNormalizedPointer,
+    onCreateShape: createShapeFromTool,
+    onCreateText: createTextAt,
+    onDeleteElement: deleteSelectedElement,
+    onMoveElement: moveSelectedElement,
+    resolveElementAt,
+    onSelectionChange: setSelectedElementId,
+    selectedElementId,
+  });
 
   async function animateStroke(
     strokeId: string,
@@ -636,16 +932,19 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
   }
 
   function upsertText(elementId: string, payload: Record<string, unknown>): void {
-    const next: TextItem = {
-      id: `text-${elementId}`,
-      elementId,
-      text: asString(payload["text"], ""),
-      x: asNumber(payload["x"], 0),
-      y: asNumber(payload["y"], 0),
-      fontSize: asNumber(payload["font_size"], 18),
-      color: asString(payload["color"], "#000"),
-    };
     setTextItems((prev) => {
+      const existing = prev.find((item) => item.elementId === elementId);
+      const next: TextItem = {
+        id: `text-${elementId}`,
+        elementId,
+        text: asString(payload["text"], ""),
+        x: asNumber(payload["x"], 0),
+        y: asNumber(payload["y"], 0),
+        fontSize: asNumber(payload["font_size"], 18),
+        color: asString(payload["color"], "#000"),
+        source:
+          asString(payload["source"], existing?.source ?? "ai") === "user" ? "user" : "ai",
+      };
       const without = prev.filter((item) => item.elementId !== elementId);
       return [...without, next];
     });
@@ -654,18 +953,21 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
   function upsertHighlight(elementId: string, payload: Record<string, unknown>): void {
     const targetElementIds = asStringArray(payload["target_element_ids"]);
     const padding = asNumber(payload["padding"], 0.02);
-    const next: HighlightItem = {
-      id: `highlight-${elementId}`,
-      elementId,
-      x: asNumber(payload["x"], 0),
-      y: asNumber(payload["y"], 0),
-      width: asNumber(payload["width"], 0),
-      height: asNumber(payload["height"], 0),
-      color: asString(payload["fill_color"], asString(payload["color"], "rgba(255,255,0,0.3)")),
-      targetElementIds: targetElementIds.length ? targetElementIds : undefined,
-      padding: targetElementIds.length ? padding : undefined,
-    };
     setHighlights((prev) => {
+      const existing = prev.find((item) => item.elementId === elementId);
+      const next: HighlightItem = {
+        id: `highlight-${elementId}`,
+        elementId,
+        x: asNumber(payload["x"], 0),
+        y: asNumber(payload["y"], 0),
+        width: asNumber(payload["width"], 0),
+        height: asNumber(payload["height"], 0),
+        color: asString(payload["fill_color"], asString(payload["color"], "rgba(255,255,0,0.3)")),
+        source:
+          asString(payload["source"], existing?.source ?? "ai") === "user" ? "user" : "ai",
+        targetElementIds: targetElementIds.length ? targetElementIds : undefined,
+        padding: targetElementIds.length ? padding : undefined,
+      };
       const without = prev.filter((item) => item.elementId !== elementId);
       if (next.targetElementIds && next.targetElementIds.length > 0) {
         const union = computeUnionBBox(next.targetElementIds, next.padding ?? 0.02, without);
@@ -735,6 +1037,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
 
     if (!animate) {
       setStrokes((prev) => {
+        const existing = prev.find((stroke) => stroke.elementId === elementId);
         const without = prev.filter((stroke) => stroke.elementId !== elementId);
         const svgPath = elementType === "freehand" && renderMode !== "polyline"
           ? computeFreehandPath(smoothedPoints, dimensions.width, strokeWidth * 1.5)
@@ -747,7 +1050,8 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
             points: smoothedPoints,
             color,
             strokeWidth,
-            owner: "agent",
+            source:
+              asString(payload["source"], existing?.source ?? "ai") === "user" ? "user" : "ai",
             elementType,
             renderMode,
             clipRect: clipRect ?? undefined,
@@ -767,6 +1071,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
     }
 
     setStrokes((prev) => {
+      const existing = prev.find((stroke) => stroke.elementId === elementId);
       const without = prev.filter((stroke) => stroke.elementId !== elementId);
       return [
         ...without,
@@ -776,7 +1081,8 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
           points: [firstPoint],
           color,
           strokeWidth,
-          owner: "agent",
+          source:
+            asString(payload["source"], existing?.source ?? "ai") === "user" ? "user" : "ai",
           elementType,
           renderMode,
           clipRect: clipRect ?? undefined,
@@ -839,10 +1145,69 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
   }, []);
 
   useEffect(() => {
+    if (dimensions.width <= 0) return;
+    setToolbarPosition((current) => {
+      if (toolbarPositionInitializedRef.current) {
+        return clampToolbarPosition(current);
+      }
+      toolbarPositionInitializedRef.current = true;
+      return {
+        x: Math.max(10, Math.round((dimensions.width - Math.min(dimensions.width * 0.92, 760)) / 2)),
+        y: 10,
+      };
+    });
+  }, [dimensions.height, dimensions.width]);
+
+  useEffect(() => {
     if (!sessionId) return;
     if (dimensions.width <= 0 || dimensions.height <= 0) return;
     sendCanvasMetrics(dimensions.width, dimensions.height);
   }, [dimensions.height, dimensions.width, sessionId]);
+
+  useEffect(() => {
+    if (!onSnapshotExporterChange) return;
+
+    onSnapshotExporterChange(async () => {
+      const stage = stageRef.current;
+      if (!stage || !dirtyRef.current || dimensions.width <= 0 || dimensions.height <= 0) {
+        return;
+      }
+
+      const sourceCanvas = stage.toCanvas({
+        pixelRatio: 384 / Math.max(dimensions.width, dimensions.height),
+      });
+      const exportCanvas = document.createElement("canvas");
+      exportCanvas.width = 384;
+      exportCanvas.height = 384;
+      const context = exportCanvas.getContext("2d");
+      if (!context) return;
+
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+
+      const scale = Math.min(
+        exportCanvas.width / sourceCanvas.width,
+        exportCanvas.height / sourceCanvas.height,
+      );
+      const drawWidth = sourceCanvas.width * scale;
+      const drawHeight = sourceCanvas.height * scale;
+      const offsetX = (exportCanvas.width - drawWidth) / 2;
+      const offsetY = (exportCanvas.height - drawHeight) / 2;
+      context.drawImage(sourceCanvas, offsetX, offsetY, drawWidth, drawHeight);
+
+      const dataUrl = exportCanvas.toDataURL("image/jpeg", 0.5);
+      const base64Data = dataUrl.split(",")[1];
+      if (!base64Data) return;
+      const sent = sendCanvasSnapshot(base64Data);
+      if (sent) {
+        dirtyRef.current = false;
+      }
+    });
+
+    return () => {
+      onSnapshotExporterChange(null);
+    };
+  }, [dimensions.height, dimensions.width, onSnapshotExporterChange]);
 
   useEffect(() => {
     unmountedRef.current = false;
@@ -858,9 +1223,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
     processedCountRef.current = 0;
     queueRef.current = [];
     setGraphViewport(null);
-    setLocalStroke([]);
     setSelectedElementId(null);
-    localPointsRef.current = [];
 
     const nextText: TextItem[] = [];
     const nextStrokes: StrokeItem[] = [];
@@ -879,6 +1242,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
           y: asNumber(payload["y"], 0),
           fontSize: asNumber(payload["font_size"], 18),
           color: asString(payload["color"], "#000"),
+          source: element.source,
         });
         continue;
       }
@@ -893,6 +1257,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
           width: asNumber(payload["width"], 0),
           height: asNumber(payload["height"], 0),
           color: asString(payload["fill_color"], asString(payload["color"], "rgba(255,255,0,0.3)")),
+          source: element.source,
           targetElementIds: targetElementIds.length ? targetElementIds : undefined,
           padding: targetElementIds.length ? asNumber(payload["padding"], 0.02) : undefined,
         });
@@ -913,7 +1278,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
           points,
           color: asString(payload["color"], "#111"),
           strokeWidth,
-          owner: "agent",
+          source: element.source,
           elementType: element.element_type,
           renderMode:
             element.element_type === "freehand" && payload["render_mode"] === "polyline"
@@ -934,6 +1299,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
     setTextItems(nextText);
     setStrokes(nextStrokes);
     setHighlights(nextHighlights);
+    dirtyRef.current = false;
   }, [dimensions.width, initialElements]);
 
   useEffect(() => {
@@ -1023,9 +1389,8 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
               setStrokes([]);
               setHighlights([]);
               setGraphViewport(null);
-              setLocalStroke([]);
               setSelectedElementId(null);
-              localPointsRef.current = [];
+              markCanvasDirty();
               continue;
             }
 
@@ -1033,6 +1398,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
               const viewport = toGraphViewport(payload["viewport"] ?? payload);
               if (viewport) {
                 setGraphViewport(viewport);
+                markCanvasDirty();
               }
               continue;
             }
@@ -1053,6 +1419,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
               } else if (elementType === "shape") {
                 await upsertStroke(elementId, typedPayload, "shape", asBoolean(typedPayload["animate"], true));
               }
+              markCanvasDirty();
               continue;
             }
 
@@ -1066,6 +1433,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
               setHighlights((prev) => prev.filter((item) => !idSet.has(item.elementId)));
               // Deselect if the selected element was deleted
               setSelectedElementId((prev) => (prev && idSet.has(prev) ? null : prev));
+              markCanvasDirty();
               continue;
             }
 
@@ -1106,6 +1474,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
                   );
                 }
               }
+              markCanvasDirty();
               continue;
             }
 
@@ -1143,6 +1512,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
                   ),
                 );
               }
+              markCanvasDirty();
             }
           } catch (messageError) {
             console.error("Failed to process drawing message", message.type, messageError);
@@ -1157,63 +1527,37 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
   }, [messages]);
 
   const cursor =
-    toolMode === "draw" ? "crosshair" : toolMode === "select" ? "default" : "pointer";
+    activeTool === "select" ? "default" : activeTool === "eraser" ? "pointer" : "crosshair";
 
   return (
     <div
       ref={containerRef}
       style={{ width: "100%", height: "100%", background: "#f5f5f5", position: "relative" }}
     >
-      {/* Toolbar */}
-      <div
-        style={{
-          position: "absolute",
-          top: 12,
-          right: 12,
-          zIndex: 5,
-          display: "flex",
-          gap: 8,
-          padding: 6,
-          borderRadius: 8,
-          background: "rgba(255,255,255,0.9)",
-          border: "1px solid #ddd",
+      <DrawingToolbar
+        activeTool={activeTool}
+        onToolChange={setActiveTool}
+        collapsed={toolbarCollapsed}
+        onCollapsedChange={setToolbarCollapsed}
+        position={toolbarPosition}
+        bounds={dimensions}
+        onPositionChange={(nextPosition) => {
+          setToolbarPosition(clampToolbarPosition(nextPosition));
         }}
-      >
-        {(["draw", "select", "delete"] as const).map((mode) => (
-          <button
-            key={mode}
-            onClick={() => {
-              setToolMode(mode);
-              if (mode !== "select") setSelectedElementId(null);
-            }}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 6,
-              border: "1px solid #ccc",
-              background: toolMode === mode ? "#111" : "#fff",
-              color: toolMode === mode ? "#fff" : "#111",
-              fontSize: 12,
-              cursor: "pointer",
-              textTransform: "capitalize",
-            }}
-          >
-            {mode}
-          </button>
-        ))}
-      </div>
+      />
 
       {dimensions.width > 0 && dimensions.height > 0 && (
         <Stage
           ref={stageRef}
           width={dimensions.width}
           height={dimensions.height}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          onTouchStart={handleMouseDown}
-          onTouchMove={handleMouseMove}
-          onTouchEnd={handleMouseUp}
+          onMouseDown={handlePointerDown}
+          onMouseMove={handlePointerMove}
+          onMouseUp={handlePointerUp}
+          onMouseLeave={handlePointerUp}
+          onTouchStart={handlePointerDown}
+          onTouchMove={handlePointerMove}
+          onTouchEnd={handlePointerUp}
           style={{ touchAction: "none", cursor }}
         >
           {/* Background */}
@@ -1386,14 +1730,6 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
           <Layer>
             {strokes.map((stroke) => {
               const isSelected = stroke.elementId === selectedElementId;
-              const handleClick = () => {
-                if (toolMode === "delete" && stroke.owner === "user") {
-                  handleDeleteStroke(stroke.id);
-                } else if (toolMode === "select") {
-                  handleSelectStroke(stroke.elementId);
-                }
-              };
-              const strokeOpacity = toolMode === "delete" && stroke.owner === "user" ? 0.8 : 1;
               const lineNode = (
                 <Line
                   key={stroke.id}
@@ -1406,10 +1742,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
                   lineCap="round"
                   lineJoin="round"
                   dash={isSelected ? [6, 3] : undefined}
-                  hitStrokeWidth={toolMode === "delete" ? 24 : 12}
-                  onClick={handleClick}
-                  onTap={handleClick}
-                  opacity={strokeOpacity}
+                  hitStrokeWidth={activeTool === "eraser" ? 24 : 12}
                 />
               );
 
@@ -1429,9 +1762,6 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
                       ctx._context.fill(path);
                       ctx.fillStrokeShape(shape);
                     }}
-                    onClick={handleClick}
-                    onTap={handleClick}
-                    opacity={strokeOpacity}
                   />
                 );
                 if (!stroke.clipRect) {
@@ -1465,20 +1795,7 @@ export function Whiteboard({ messages, initialElements, sessionId, authToken }: 
                 </Group>
               );
             })}
-            {localStroke.length > 1 && (() => {
-              const ghostPath = computeFreehandPath(localStroke, dimensions.width, 3);
-              if (!ghostPath) return null;
-              return (
-                <Shape
-                  sceneFunc={(ctx, shape) => {
-                    const path = new Path2D(ghostPath);
-                    ctx._context.fillStyle = "#111";
-                    ctx._context.fill(path);
-                    ctx.fillStrokeShape(shape);
-                  }}
-                />
-              );
-            })()}
+            {draftShape && renderDraftShape(draftShape, dimensions.width)}
           </Layer>
 
           {/* Text */}

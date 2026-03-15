@@ -156,6 +156,7 @@ def element_to_frontend_payload(element: StoredElement) -> dict:
     translated = _translate_style_for_frontend(style)
     for key, value in translated.items():
         payload.setdefault(key, value)
+    payload.setdefault("source", element.source)
     return payload
 
 
@@ -525,6 +526,7 @@ async def apply_command(
             element_type="shape",
             payload=draw_payload,
             bbox=bbox,
+            source=command.source,
         )
         session_elements[element_id] = element
         await store.put_element(command.session_id, element)
@@ -540,6 +542,7 @@ async def apply_command(
                     "payload": {
                         "shape": draw_payload["shape"],
                         "points": draw_payload["points"],
+                        "source": command.source,
                         **_translate_style_for_frontend(draw_payload["style"]),
                     },
                 },
@@ -555,6 +558,7 @@ async def apply_command(
             element_type="text",
             payload=draw_payload,
             bbox=bbox,
+            source=command.source,
         )
         session_elements[element_id] = element
         await store.put_element(command.session_id, element)
@@ -572,6 +576,7 @@ async def apply_command(
                         "x": draw_payload["x"],
                         "y": draw_payload["y"],
                         "font_size": draw_payload["font_size"],
+                        "source": command.source,
                         **_translate_style_for_frontend(draw_payload["style"]),
                     },
                 },
@@ -587,6 +592,7 @@ async def apply_command(
             element_type="freehand",
             payload=draw_payload,
             bbox=bbox,
+            source=command.source,
         )
         session_elements[element_id] = element
         await store.put_element(command.session_id, element)
@@ -601,6 +607,7 @@ async def apply_command(
                     "element_type": "freehand",
                     "payload": {
                         "points": draw_payload["points"],
+                        "source": command.source,
                         **_translate_style_for_frontend(draw_payload["style"]),
                     },
                 },
@@ -662,6 +669,7 @@ async def apply_command(
                     element_type="highlight",
                     payload=h_payload,
                     bbox=BBox(ux, uy, uw, uh),
+                    source=command.source,
                 )
                 session_elements[eid] = el
                 await store.put_element(command.session_id, el)
@@ -674,6 +682,7 @@ async def apply_command(
                         "x": ux, "y": uy, "width": uw, "height": uh,
                         "target_element_ids": target_ids,
                         "padding": pad,
+                        "source": command.source,
                         **_translate_style_for_frontend(style_dict),
                     },
                 }))
@@ -696,6 +705,7 @@ async def apply_command(
                         "created_at": _now_iso(),
                     },
                     bbox=BBox(ux, uy, uw, uh),
+                    source=command.source,
                 )
                 session_elements[eid] = el
                 await store.put_element(command.session_id, el)
@@ -710,6 +720,7 @@ async def apply_command(
                         "highlight_part": "ellipse",
                         "target_element_ids": target_ids,
                         "padding": pad,
+                        "source": command.source,
                         **_translate_style_for_frontend(style_dict),
                     },
                 }))
@@ -733,6 +744,7 @@ async def apply_command(
                         "created_at": _now_iso(),
                     },
                     bbox=BBox(ux, uy, uw, uh),
+                    source=command.source,
                 )
                 session_elements[eid1] = el1
                 await store.put_element(command.session_id, el1)
@@ -746,6 +758,7 @@ async def apply_command(
                         "highlight_part": "ellipse",
                         "target_element_ids": target_ids,
                         "padding": pad,
+                        "source": command.source,
                         **_translate_style_for_frontend(style_dict),
                     },
                 }))
@@ -772,6 +785,7 @@ async def apply_command(
                             "created_at": _now_iso(),
                         },
                         bbox=BBox(cx, arrow_tip_y, 0.001, arrow_start_y - arrow_tip_y),
+                        source=command.source,
                     )
                     session_elements[eid2] = el2
                     await store.put_element(command.session_id, el2)
@@ -785,6 +799,7 @@ async def apply_command(
                             "highlight_part": "arrow",
                             "target_element_ids": target_ids,
                             "padding": pad,
+                            "source": command.source,
                             **_translate_style_for_frontend(style_dict),
                         },
                     }))
@@ -861,6 +876,7 @@ async def apply_command(
                         element_type="text",
                         payload=draw_payload,
                         bbox=bbox,
+                        source=shape_element.source,
                     )
                     session_elements[label_id] = label_element
                     await store.put_element(command.session_id, label_element)
@@ -885,6 +901,7 @@ async def apply_command(
                                     "x": draw_payload["x"],
                                     "y": draw_payload["y"],
                                     "font_size": draw_payload["font_size"],
+                                    "source": shape_element.source,
                                     **_translate_style_for_frontend(draw_payload["style"]),
                                 },
                             },

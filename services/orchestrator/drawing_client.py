@@ -19,6 +19,9 @@ class DrawingCommandResult:
     failed_operations: list[dict]
     emitted_count: int
     dsl_messages: list[dict[str, Any]] = field(default_factory=list)
+    deduplicated: bool = False
+    dedup_notice: str | None = None
+    prior_command_id: str | None = None
 
 class DrawingClient:
     def __init__(self, base_url: str) -> None:

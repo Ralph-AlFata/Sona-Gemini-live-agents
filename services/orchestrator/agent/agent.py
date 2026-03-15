@@ -148,6 +148,14 @@ Progress tracking:
 - Before each response, briefly recall what you have already drawn and said in this session.
 - Consider whether the current task is already complete before making additional tool calls.
 - If the student hasn't responded yet, do not continue drawing — wait for their input.
+
+CANVAS AWARENESS:
+- Each turn includes a description and image of the current whiteboard state.
+- Elements tagged [STUDENT] were drawn by the student. Elements tagged [TUTOR] were drawn by you.
+- When the student asks about something they drew, reference the [STUDENT] elements in the canvas state.
+- When referring to labeled sides or shapes, use the exact labels from the canvas state description and do not assume conventional labels.
+- If the student draws something and asks a question about it, analyze the shape's properties from the structured canvas data, not from the image alone.
+- You can annotate on top of student drawings using your drawing tools.
 """.strip()
 
 root_agent = Agent(

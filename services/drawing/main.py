@@ -16,6 +16,8 @@ from auth import AuthError, FirebaseTokenVerifier, extract_bearer_token
 from config import settings
 from dsl import apply_command, element_to_frontend_payload
 from models import (
+    CanvasStateElement,
+    CanvasStateResponse,
     ClearPayload,
     ClearRequest,
     DSLMessage,
@@ -25,7 +27,7 @@ from models import (
     SessionElementSnapshot,
     SessionStateResponse,
 )
-from store import ElementStore, InMemoryElementStore, StoredElement
+from store import BBox, ElementStore, InMemoryElementStore, StoredElement
 
 load_dotenv()
 
@@ -211,6 +213,80 @@ async def get_session_elements(session_id: str, request: Request) -> list[Sessio
     )
 
 
+@app.get(
+    "/sessions/{session_id}/canvas_state",
+    response_model=CanvasStateResponse,
+    tags=["drawing"],
+)
+async def get_canvas_state(session_id: str, request: Request) -> CanvasStateResponse:
+    bearer_token: str | None = None
+    if settings.drawing_auth_enabled:
+        token = extract_bearer_token(request.headers.get("authorization"))
+        await _authorize_session_access(session_id, token)
+        bearer_token = token
+
+    session_elements = await _store.get_all_elements(session_id)
+    ordered_elements = sorted(
+        session_elements.values(),
+        key=_element_replay_sort_key,
+    )
+    if not ordered_elements:
+        legacy_rows = await _load_legacy_session_elements(session_id, bearer_token)
+        for row in legacy_rows:
+            if not isinstance(row, dict):
+                continue
+            payload_raw = row.get("payload")
+            bbox_raw = row.get("bbox")
+            if not isinstance(payload_raw, dict):
+                payload_raw = {}
+            if not isinstance(bbox_raw, dict):
+                bbox_raw = {}
+            ordered_elements.append(
+                StoredElement(
+                    element_id=str(row.get("element_id", "")),
+                    element_type=str(row.get("element_type", "")),
+                    payload=payload_raw,
+                    source=str(row.get("source", payload_raw.get("source", "ai"))),
+                    bbox=_bbox_from_raw(bbox_raw, payload_raw),
+                )
+            )
+
+    elements: list[CanvasStateElement] = []
+    for element in ordered_elements:
+        payload = element.payload if isinstance(element.payload, dict) else {}
+        style = payload.get("style")
+        side_labels = payload.get("side_labels")
+        labels = [
+            str(entry.get("text", ""))
+            for entry in side_labels
+            if isinstance(entry, dict) and str(entry.get("text", "")).strip()
+        ] if isinstance(side_labels, list) else []
+        points = payload.get("points")
+        elements.append(
+            CanvasStateElement(
+                id=element.element_id,
+                type=payload.get("shape", element.element_type),
+                source="user" if element.source == "user" else "ai",
+                points=points if isinstance(points, list) else [],
+                labels=labels,
+                text=str(payload["text"]) if isinstance(payload.get("text"), str) else None,
+                style=style if isinstance(style, dict) else {},
+                bbox={
+                    "x": element.bbox.x,
+                    "y": element.bbox.y,
+                    "width": element.bbox.width,
+                    "height": element.bbox.height,
+                },
+            )
+        )
+
+    return CanvasStateResponse(
+        session_id=session_id,
+        element_count=len(elements),
+        elements=elements,
+    )
+
+
 async def _build_session_element_snapshots(
     *,
     session_id: str,
@@ -228,6 +304,7 @@ async def _build_session_element_snapshots(
                 session_id=session_id,
                 element_id=element.element_id,
                 element_type=element.element_type,
+                source="user" if element.source == "user" else "ai",
                 payload=element_to_frontend_payload(element),
             )
         )
@@ -253,10 +330,24 @@ async def _build_session_element_snapshots(
                 session_id=session_id,
                 element_id=element_id_raw,
                 element_type=element_type_raw,
+                source=str(row.get("source", payload_raw.get("source", "ai"))),
                 payload=_normalize_fallback_payload(payload_raw),
             )
         )
     return snapshots
+
+
+def _bbox_from_raw(bbox_raw: dict[str, Any], payload_raw: dict[str, Any]) -> BBox:
+    x = float(bbox_raw.get("x", payload_raw.get("x", 0.0) or 0.0))
+    y = float(bbox_raw.get("y", payload_raw.get("y", 0.0) or 0.0))
+    width = float(bbox_raw.get("width", 0.001) or 0.001)
+    height = float(bbox_raw.get("height", 0.001) or 0.001)
+    return BBox(
+        x=x,
+        y=y,
+        width=max(width, 0.001),
+        height=max(height, 0.001),
+    )
 
 
 def _element_replay_sort_key(element: StoredElement) -> tuple[int, str, str]:
@@ -342,6 +433,8 @@ def _normalize_fallback_payload(payload: dict[str, Any]) -> dict[str, Any]:
         normalized["delay_ms"] = style.get("delay_ms", 0)
     if "animate" not in normalized:
         normalized["animate"] = bool(style.get("animate", False))
+    if "source" not in normalized:
+        normalized["source"] = payload.get("source", "ai")
     return normalized
 
 

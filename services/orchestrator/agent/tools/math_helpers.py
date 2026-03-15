@@ -82,10 +82,15 @@ def _clamp_graph_viewport(x: float, y: float, width: float, height: float) -> tu
     }, changed
 
 
+def _normalize_expression_for_parse(expression: str) -> str:
+    """Normalize common model syntax into something SymPy can parse reliably."""
+    return expression.replace("^", "**").strip()
+
+
 def _parse_expression(expression: str):
-    """Parse expressions with implicit multiplication, e.g. `2x - 4`."""
+    """Parse expressions with implicit multiplication, e.g. `2x - 4` or `x^2 - 4`."""
     return parse_expr(
-        expression,
+        _normalize_expression_for_parse(expression),
         transformations=_SYMPY_TRANSFORMATIONS,
         evaluate=True,
     )
@@ -268,7 +273,7 @@ def _estimate_text_size(text: str, font_size: int) -> tuple[float, float]:
 
 
 def _format_equation_label(expression: str) -> str:
-    label = expression.strip().replace("*", "")
+    label = expression.strip().replace("**", "^").replace("*", "")
     if not label:
         return "y = 0"
     if not label.lower().startswith("y"):

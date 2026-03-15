@@ -234,3 +234,14 @@ export function sendCanvasMetrics(canvasWidthPx: number, canvasHeightPx: number)
   socket.send(JSON.stringify({ type: "canvas_metrics", ...lastCanvasMetrics }));
   return true;
 }
+
+export function sendCanvasSnapshot(base64Data: string): boolean {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  socket.send(
+    JSON.stringify({
+      type: "snapshot",
+      data: base64Data,
+    }),
+  );
+  return true;
+}

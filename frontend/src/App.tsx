@@ -64,6 +64,7 @@ export function App() {
   const sessionId = activeSession?.session_id ?? "";
   const showSidebarBackdrop = sidebarOpen && isMobileSidebarViewport();
   const activeSessionIdRef = useRef("");
+  const snapshotExporterRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     activeSessionIdRef.current = sessionId;
@@ -590,6 +591,9 @@ export function App() {
                   initialElements={sessionElements}
                   sessionId={sessionId}
                   authToken={authSession.idToken}
+                  onSnapshotExporterChange={(exporter) => {
+                    snapshotExporterRef.current = exporter;
+                  }}
                 />
               ) : (
                 <div className="canvas-empty">Create or select a session to start.</div>
@@ -601,6 +605,9 @@ export function App() {
                 userId={authSession.userId}
                 sessionId={sessionId}
                 authToken={authSession.idToken}
+                requestCanvasSnapshot={async () => {
+                  await snapshotExporterRef.current?.();
+                }}
               />
             ) : null}
           </main>

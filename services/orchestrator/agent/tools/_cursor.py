@@ -33,6 +33,8 @@ class BBox:
     @property
     def bottom(self) -> float:
         return self.y + self.height
+    
+    # TODO: Might need to add Top and Left
 
 
 @dataclass
@@ -60,7 +62,7 @@ class CursorState:
         bbox = BBox(x=self.x, y=self.y, width=width, height=height)
         self.row_max_bottom = max(self.row_max_bottom, bbox.bottom)
         self.column_max_right = max(self.column_max_right, bbox.right)
-
+        # TODO: Double check if I want to add above
         if next_direction == "right":
             next_x = bbox.right + GAP_HORIZONTAL
             if next_x > RIGHT_EDGE:
@@ -80,6 +82,9 @@ class CursorState:
 
         return bbox
 
+    # TODO: Double check what that already existing function does.
+    # TODO: When we are working with a "relative" cursor, the already existing absolute cursor should remain where it is.
+    # Also, if an element is added on a non-standard place, the cursor should take into consideration the already existing bounding boxes, and skip them by either going to the bottom, left, right, or above, or it might even choose to move it.
     def advance_from_bbox(self, bbox: BBox, next_direction: str = "below") -> None:
         """
         Advance cursor using an already-placed element bbox.
@@ -195,6 +200,7 @@ class CursorState:
             "bottom_edge": round(self.bottom_edge, 4),
         }
 
+    # TODO: Checkout what this is
     @classmethod
     def from_snapshot_dict(cls, raw: Mapping[str, object]) -> "CursorState":
         state = cls()

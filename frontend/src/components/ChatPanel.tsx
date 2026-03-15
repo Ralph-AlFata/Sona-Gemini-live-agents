@@ -24,6 +24,7 @@ interface ChatPanelProps {
   userId: string;
   sessionId: string;
   authToken: string;
+  requestCanvasSnapshot?: () => Promise<void>;
 }
 
 async function readFileAsDataUrl(file: File): Promise<string> {
@@ -63,7 +64,12 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-export function ChatPanel({ userId, sessionId, authToken }: ChatPanelProps) {
+export function ChatPanel({
+  userId,
+  sessionId,
+  authToken,
+  requestCanvasSnapshot,
+}: ChatPanelProps) {
   const [status, setStatus] = useState<LiveConnectionStatus>("disconnected");
   const [turns, setTurns] = useState<LiveTurn[]>([]);
   const [audioEnabled, setAudioEnabled] = useState(false);
@@ -178,12 +184,13 @@ export function ChatPanel({ userId, sessionId, authToken }: ChatPanelProps) {
     addTurn("system", "Audio streaming stopped.");
   }
 
-  function startSpeaking(): void {
+  async function startSpeaking(): Promise<void> {
     if (!audioEnabled || isSpeakingRef.current) return;
     // Flush any buffered assistant audio so a new user turn starts clean.
     if (playerNodeRef.current) {
       playerNodeRef.current.port.postMessage({ command: "endOfAudio" });
     }
+    await requestCanvasSnapshot?.();
     isSpeakingRef.current = true;
     setIsSpeaking(true);
     const sent = sendActivityStart();
@@ -295,12 +302,12 @@ export function ChatPanel({ userId, sessionId, authToken }: ChatPanelProps) {
             type="button"
             className={`push-to-talk ${isSpeaking ? "speaking" : ""}`}
             onMouseDown={startSpeaking}
-            onMouseUp={stopSpeaking}
-            onMouseLeave={stopSpeaking}
             onTouchStart={(e) => {
               e.preventDefault();
-              startSpeaking();
+              void startSpeaking();
             }}
+            onMouseUp={stopSpeaking}
+            onMouseLeave={stopSpeaking}
             onTouchEnd={(e) => {
               e.preventDefault();
               stopSpeaking();

@@ -10,7 +10,8 @@ Each element document schema:
         "element_id": "el_...",
         "element_type": "shape" | "text" | "freehand" | "highlight",
         "payload": { ... },        # JSON-serialisable drawing data
-        "bbox": { "x": f, "y": f, "width": f, "height": f }
+        "bbox": { "x": f, "y": f, "width": f, "height": f },
+        "source": "ai" | "user",
     }
 
 The module holds a single AsyncClient instance initialised during app lifespan.
@@ -101,6 +102,7 @@ def _element_to_doc(element: StoredElement) -> dict:
         "element_id": element.element_id,
         "element_type": element.element_type,
         "payload": element.payload,
+        "source": element.source,
         "bbox": {
             "x": element.bbox.x,
             "y": element.bbox.y,
@@ -122,6 +124,7 @@ def _doc_to_element(doc: dict) -> StoredElement:
             width=float(bbox_raw.get("width", 0.0)),
             height=float(bbox_raw.get("height", 0.0)),
         ),
+        source=str(doc.get("source", "ai")),
     )
 
 

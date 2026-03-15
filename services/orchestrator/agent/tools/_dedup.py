@@ -21,7 +21,7 @@ class ToolCallDeduplicator:
 
     Caches the result of recent ``(session_id, operation, payload)`` triples.
     If the same triple is seen again within ``window_seconds``, the cached
-    result is returned instead of executing the call again.
+    result metadata is used to suppress re-execution.
     """
 
     def __init__(self, window_seconds: float = 2.0, max_entries: int = 200) -> None:

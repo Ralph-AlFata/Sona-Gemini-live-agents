@@ -12,6 +12,7 @@ export interface SessionElementSnapshot {
   session_id: string;
   element_id: string;
   element_type: string;
+  source: "ai" | "user";
   payload: Record<string, unknown>;
 }
 
@@ -43,7 +44,7 @@ export async function postDraw(
   operation: string,
   payload: Record<string, unknown>,
   authToken: string,
-  options?: { elementId?: string },
+  options?: { elementId?: string; source?: "ai" | "user" },
 ): Promise<void> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -56,12 +57,27 @@ export async function postDraw(
       session_id: sessionId,
       operation,
       payload,
+      source: options?.source ?? "ai",
       ...(options?.elementId ? { element_id: options.elementId } : {}),
     }),
   });
   if (!response.ok) {
     throw new Error(await readErrorDetail(response));
   }
+}
+
+export async function deleteElement(
+  sessionId: string,
+  elementId: string,
+  authToken: string,
+): Promise<void> {
+  await postDraw(
+    sessionId,
+    "delete_elements",
+    { element_ids: [elementId] },
+    authToken,
+    { source: "user" },
+  );
 }
 
 export async function fetchSessionState(

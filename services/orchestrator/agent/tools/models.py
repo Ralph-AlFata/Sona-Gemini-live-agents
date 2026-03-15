@@ -195,3 +195,7 @@ class ToolResult(_StrictModel):
     created_element_ids: list[str] = Field(default_factory=list)
     failed_operations: list[dict[str, str | None]] = Field(default_factory=list)
     command_id: str
+    deduplicated: bool = False
+    already_completed: bool = False
+    message: str | None = None
+    previous_command_id: str | None = None

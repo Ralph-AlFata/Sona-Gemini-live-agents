@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+import pytest
 
 import main
 
@@ -242,8 +243,79 @@ def test_get_session_elements_returns_direct_snapshots() -> None:
         row = body[0]
         assert row["session_id"] == "elements-room"
         assert row["element_type"] == "text"
+        assert row["source"] == "ai"
         assert row["payload"]["text"] == "hydrate directly"
         assert row["payload"]["color"] == "#333333"
+        assert row["payload"]["source"] == "ai"
+
+
+def test_canvas_state_returns_sources_labels_and_bbox() -> None:
+    with TestClient(main.app) as client:
+        shape = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_canvas_shape",
+                "session_id": "canvas-state-room",
+                "operation": "draw_shape",
+                "payload": {
+                    "shape": "rectangle",
+                    "points": [
+                        {"x": 0.1, "y": 0.2},
+                        {"x": 0.3, "y": 0.2},
+                        {"x": 0.3, "y": 0.4},
+                        {"x": 0.1, "y": 0.4},
+                        {"x": 0.1, "y": 0.2},
+                    ],
+                    "style": {"stroke_color": "#111111"},
+                },
+            },
+        )
+        shape_id = shape.json()["created_element_ids"][0]
+        labels = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_canvas_labels",
+                "session_id": "canvas-state-room",
+                "operation": "set_shape_labels",
+                "payload": {"element_id": shape_id, "labels": ["AB", "BC", "CA"]},
+            },
+        )
+        assert labels.status_code == 200
+        user_text = client.post(
+            "/draw",
+            json={
+                "command_id": "cmd_canvas_text",
+                "session_id": "canvas-state-room",
+                "operation": "draw_text",
+                "source": "user",
+                "payload": {
+                    "text": "student note",
+                    "x": 0.55,
+                    "y": 0.6,
+                    "font_size": 20,
+                    "style": {"stroke_color": "#444444"},
+                },
+            },
+        )
+        assert user_text.status_code == 200
+
+        response = client.get("/sessions/canvas-state-room/canvas_state")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["session_id"] == "canvas-state-room"
+        assert body["element_count"] == 5
+
+        rectangle = next(item for item in body["elements"] if item["id"] == shape_id)
+        assert rectangle["type"] == "rectangle"
+        assert rectangle["source"] == "ai"
+        assert rectangle["labels"] == ["AB", "BC", "CA"]
+        assert rectangle["bbox"]["x"] == 0.1
+        assert rectangle["bbox"]["y"] == 0.2
+        assert rectangle["bbox"]["width"] == pytest.approx(0.2)
+        assert rectangle["bbox"]["height"] == pytest.approx(0.2)
+
+        student_note = next(item for item in body["elements"] if item["text"] == "student note")
+        assert student_note["source"] == "user"
 
 
 def test_get_session_state_sorts_by_layer_order() -> None:

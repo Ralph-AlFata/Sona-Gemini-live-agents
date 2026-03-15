@@ -17,7 +17,7 @@ from agent.tools.models import DrawFreehandInput, DrawShapeInput, DrawTextInput,
 logger = logging.getLogger(__name__)
 
 _AUTO_SHAPE_DEFAULT_WIDTH = 0.25
-_VALID_NEXT_DIRECTIONS = {"below", "right", "left", "below_all"}
+_VALID_NEXT_DIRECTIONS = {"below", "right", "left", "below_all"} # TODO: Should add top too
 _MAX_AUTO_SHAPE_WIDTH = max(0.1, RIGHT_EDGE - LEFT_MARGIN)
 _MAX_AUTO_SHAPE_HEIGHT = 2.0
 _SUPPORTED_SHAPES = {
@@ -30,6 +30,17 @@ _SUPPORTED_SHAPES = {
     "polygon",
     "square",
 }
+
+
+def _restore_cursor_from_snapshot(cursor, snapshot: dict[str, float]) -> None:
+    restored = cursor.from_snapshot_dict(snapshot)
+    cursor.x = restored.x
+    cursor.y = restored.y
+    cursor.row_start_y = restored.row_start_y
+    cursor.row_max_bottom = restored.row_max_bottom
+    cursor.row_start_x = restored.row_start_x
+    cursor.column_max_right = restored.column_max_right
+    cursor.bottom_edge = restored.bottom_edge
 
 
 def shape_to_points(
@@ -247,6 +258,7 @@ async def draw_shape(
         if height is not None and height <= 0:
             raise ValueError("height must be greater than 0")
         cursor = get_cursor(session_id)
+        cursor_before = cursor.to_snapshot_dict()
         auto_width = _AUTO_SHAPE_DEFAULT_WIDTH if width is None else width
         auto_height = auto_width if height is None else height
         auto_width, auto_height, normalized_shape_size = _normalize_auto_shape_size(
@@ -314,6 +326,9 @@ async def draw_shape(
     shape_id = result.created_element_ids[0] if result.created_element_ids else None
     label_ids: list[str] = []
 
+    if used_cursor and cursor is not None and result.deduplicated:
+        _restore_cursor_from_snapshot(cursor, cursor_before)
+
     if shape_id and data.labels:
         label_result = await execute_tool_command(
             session_id=session_id,
@@ -339,7 +354,8 @@ async def draw_shape(
     )
     if used_cursor and cursor is not None:
         response["cursor_after"] = cursor.to_dict()
-        emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
+        if not result.deduplicated:
+            emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
     if normalized_shape_size:
         response["placement_warning"] = (
             "Shape width/height were auto-normalized to canvas coordinates."
@@ -390,6 +406,7 @@ async def draw_text(
 
     if x is None and y is None:
         cursor = get_cursor(session_id)
+        cursor_before = cursor.to_snapshot_dict()
         text_width, text_height = _estimate_text_size(text, font_size)
         bbox = cursor.place(text_width, text_height, next_direction=next)
         x = bbox.x
@@ -420,6 +437,8 @@ async def draw_text(
         payload=data.model_dump(mode="json", exclude={"next"}),
     )
     response = result_to_dict(result)
+    if used_cursor and cursor is not None and result.deduplicated:
+        _restore_cursor_from_snapshot(cursor, cursor_before)
     text_width, text_height = _estimate_text_size(text, font_size)
     response["element_bbox"] = {
         "x": round(data.x if data.x is not None else 0.0, 4),
@@ -429,7 +448,8 @@ async def draw_text(
     }
     if used_cursor and cursor is not None:
         response["cursor_after"] = cursor.to_dict()
-        emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
+        if not result.deduplicated:
+            emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
     if normalized_partial_coords:
         response["placement_warning"] = (
             "Partial text coordinates were ignored; used automatic cursor placement."
@@ -492,10 +512,12 @@ async def draw_freehand(
         height=bbox_payload["height"],
     )
     cursor = get_cursor(session_id)
-    cursor.advance_from_bbox(bbox, next_direction=next)
+    if not result.deduplicated:
+        cursor.advance_from_bbox(bbox, next_direction=next)
     response["cursor_after"] = cursor.to_dict()
     response["element_bbox"] = bbox_payload
-    emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
+    if not result.deduplicated:
+        emit_draw_trace({"cursor_state": cursor.to_snapshot_dict()})
     return response
 
 

@@ -30,6 +30,7 @@ class StoredElement:
     element_type: str  # "shape" | "text" | "freehand" | "highlight"
     payload: dict      # Type-specific drawing data (serialisable to JSON)
     bbox: BBox         # Bounding box used for spatial queries (e.g. erase region)
+    source: str = "ai"
 
 
 @runtime_checkable

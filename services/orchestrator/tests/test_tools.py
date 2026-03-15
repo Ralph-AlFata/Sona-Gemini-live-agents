@@ -95,6 +95,29 @@ async def test_draw_shape_maps_payload(monkeypatch: pytest.MonkeyPatch, _fake_cl
 
 
 @pytest.mark.asyncio
+async def test_duplicate_draw_freehand_returns_dedup_instruction_and_does_not_move_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_test")
+
+    points = [{"x": 0.1, "y": 0.1}, {"x": 0.3, "y": 0.3}]
+    first = await core.draw_freehand(points=points)
+    second = await core.draw_freehand(points=points)
+
+    assert first["status"] == "success"
+    assert second["status"] == "success"
+    assert second["deduplicated"] is True
+    assert second["already_completed"] is True
+    assert "ALREADY successful" in second["message"]
+    assert "DO NOT call the same tool again" in second["message"]
+    assert second["created_element_ids"] == first["created_element_ids"]
+    assert second["previous_command_id"] == first["command_id"]
+    assert second["cursor_after"] == first["cursor_after"]
+    assert len(_fake_client.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_draw_shape_with_labels_uses_shape_label_edit_operation(
     monkeypatch: pytest.MonkeyPatch,
     _fake_client: _FakeClient,
@@ -697,6 +720,26 @@ async def test_plot_function_accepts_implicit_multiplication(
     assert result["status"] == "success"
     assert [call["operation"] for call in _fake_client.calls] == ["draw_freehand", "draw_text"]
     assert _fake_client.calls[1]["payload"]["text"] == "y = 2x - 4"
+
+
+@pytest.mark.asyncio
+async def test_plot_function_accepts_caret_exponentiation(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(math_helpers, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await math_helpers.plot_function_2d(
+        expression="x^2 - 4",
+        domain_min=-3,
+        domain_max=3,
+        y_min=-5,
+        y_max=6,
+    )
+
+    assert result["status"] == "success"
+    assert [call["operation"] for call in _fake_client.calls] == ["draw_freehand", "draw_text"]
+    assert _fake_client.calls[1]["payload"]["text"] == "y = x^2 - 4"
 
 
 @pytest.mark.asyncio
