@@ -114,4 +114,4 @@ jobs:
           gcloud run services update sona-session      --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
           gcloud run services update sona-drawing      --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
           gcloud run services update sona-orchestrator --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
->>>>>>> origin/main
+
