@@ -53,6 +53,7 @@ interface GraphViewport {
 interface TextItem {
   id: string;
   elementId: string;
+  elementId: string;
   text: string;
   x: number;
   y: number;
@@ -63,6 +64,7 @@ interface TextItem {
 
 interface StrokeItem {
   id: string;
+  elementId: string;
   elementId: string;
   points: PointNorm[];
   color: string;
@@ -80,6 +82,7 @@ interface StrokeItem {
 
 interface HighlightItem {
   id: string;
+  elementId: string;
   elementId: string;
   x: number;
   y: number;
@@ -101,6 +104,7 @@ interface WhiteboardProps {
 
 const HANDWRITING_FONT = '"Patrick Hand", "Comic Sans MS", cursive';
 const SHAPE_STEP_DELAY_MS = 20;
+const SHAPE_STEP_DELAY_MS = 20;
 const FREEHAND_STEP_DELAY_MS = 12;
 const SEGMENT_SAMPLES_PER_UNIT = 90;
 
@@ -111,6 +115,35 @@ function asNumber(value: unknown, fallback: number): number {
 
 function asString(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item)).filter((item) => item.length > 0);
+}
+
+function asHighlightKind(value: unknown): "circle" | "pointer" | null {
+  if (value === "circle" || value === "pointer") return value;
+  return null;
+}
+
+function asHighlightPart(value: unknown): "ellipse" | "arrow" | null {
+  if (value === "ellipse" || value === "arrow") return value;
+  return null;
+}
+
+function formatTickValue(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  if (Math.abs(value) < 1e-9) return "0";
+  const roundedInt = Math.round(value);
+  if (Math.abs(value - roundedInt) < 1e-9) {
+    return String(roundedInt);
+  }
+  return Number(value.toFixed(2)).toString();
 }
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
@@ -1128,6 +1161,13 @@ export function Whiteboard({
             return prev;
           }
           return { width, height };
+        const width = containerRef.current.offsetWidth;
+        const height = containerRef.current.offsetHeight;
+        setDimensions((prev) => {
+          if (prev.width === width && prev.height === height) {
+            return prev;
+          }
+          return { width, height };
         });
       }
     }
@@ -1137,7 +1177,15 @@ export function Whiteboard({
     if (containerRef.current) {
       observer.observe(containerRef.current);
     }
+    const observer = new ResizeObserver(updateSize);
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
     window.addEventListener("resize", updateSize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateSize);
+    };
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", updateSize);
@@ -1214,6 +1262,7 @@ export function Whiteboard({
     processingRef.current = false;
     return () => {
       unmountedRef.current = true;
+      processingRef.current = false;
       processingRef.current = false;
       queueRef.current = [];
     };
@@ -1533,6 +1582,7 @@ export function Whiteboard({
     <div
       ref={containerRef}
       style={{ width: "100%", height: "100%", background: "#f5f5f5", position: "relative" }}
+      style={{ width: "100%", height: "100%", background: "#f5f5f5", position: "relative" }}
     >
       <DrawingToolbar
         activeTool={activeTool}
@@ -1713,18 +1763,173 @@ export function Whiteboard({
             </Layer>
 
           {/* Highlights */}
+              <Rect
+                x={0}
+                y={0}
+                width={dimensions.width}
+                height={dimensions.height}
+                fill="#ffffff"
+                listening={false}
+              />
+              {graphViewport && (() => {
+                const graphX = graphViewport.x * dimensions.width;
+                const graphY = graphViewport.y * dimensions.width;
+                const graphW = graphViewport.width * dimensions.width;
+                const graphH = graphViewport.height * dimensions.width;
+                const stepX = graphW / graphViewport.gridLines;
+                const stepY = graphH / graphViewport.gridLines;
+
+                const hasXAxis = graphViewport.yMin <= 0 && graphViewport.yMax >= 0;
+                const hasYAxis = graphViewport.domainMin <= 0 && graphViewport.domainMax >= 0;
+                const xAxisY = hasXAxis
+                  ? graphY + ((graphViewport.yMax - 0) / (graphViewport.yMax - graphViewport.yMin)) * graphH
+                  : graphY + graphH;
+                const yAxisX = hasYAxis
+                  ? graphX + ((0 - graphViewport.domainMin) / (graphViewport.domainMax - graphViewport.domainMin)) * graphW
+                  : graphX;
+
+                const xStepValue = (graphViewport.domainMax - graphViewport.domainMin) / graphViewport.gridLines;
+                const yStepValue = (graphViewport.yMax - graphViewport.yMin) / graphViewport.gridLines;
+                const showEvery = graphViewport.gridLines > 14 ? 2 : 1;
+
+                const xTickLabelY =
+                  xAxisY + 18 < graphY + graphH ? xAxisY + 6 : xAxisY - 18;
+                const yLabelsOnLeft = yAxisX - 38 >= graphX - 2;
+                const yTickLabelX = yLabelsOnLeft ? yAxisX - 36 : yAxisX + 6;
+                const yTickAlign = yLabelsOnLeft ? "right" : "left";
+
+                return (
+                  <>
+                    {Array.from({ length: graphViewport.gridLines - 1 }).map((_, idx) => {
+                      const vx = graphX + (idx + 1) * stepX;
+                      return (
+                        <Line
+                          key={`grid-v-${idx}`}
+                          points={[vx, graphY, vx, graphY + graphH]}
+                          stroke={graphViewport.gridColor}
+                          strokeWidth={1}
+                          opacity={graphViewport.gridOpacity}
+                          listening={false}
+                        />
+                      );
+                    })}
+                    {Array.from({ length: graphViewport.gridLines - 1 }).map((_, idx) => {
+                      const hy = graphY + (idx + 1) * stepY;
+                      return (
+                        <Line
+                          key={`grid-h-${idx}`}
+                          points={[graphX, hy, graphX + graphW, hy]}
+                          stroke={graphViewport.gridColor}
+                          strokeWidth={1}
+                          opacity={graphViewport.gridOpacity}
+                          listening={false}
+                        />
+                      );
+                    })}
+
+                    <Line
+                      points={[graphX, xAxisY, graphX + graphW, xAxisY]}
+                      stroke={graphViewport.axisColor}
+                      strokeWidth={graphViewport.axisWidth}
+                      listening={false}
+                    />
+                    <Line
+                      points={[yAxisX, graphY, yAxisX, graphY + graphH]}
+                      stroke={graphViewport.axisColor}
+                      strokeWidth={graphViewport.axisWidth}
+                      listening={false}
+                    />
+
+                    {Array.from({ length: graphViewport.gridLines + 1 }).map((_, idx) => {
+                      if (idx % showEvery !== 0) return null;
+                      const xPx = graphX + idx * stepX;
+                      const xValue = graphViewport.domainMin + idx * xStepValue;
+                      return (
+                        <Text
+                          key={`x-tick-${idx}`}
+                          x={xPx - 18}
+                          y={xTickLabelY}
+                          width={36}
+                          align="center"
+                          text={formatTickValue(xValue)}
+                          fontSize={11}
+                          fill="#444"
+                          listening={false}
+                        />
+                      );
+                    })}
+                    {Array.from({ length: graphViewport.gridLines + 1 }).map((_, idx) => {
+                      if (idx % showEvery !== 0) return null;
+                      const yPx = graphY + idx * stepY;
+                      const yValue = graphViewport.yMax - idx * yStepValue;
+                      return (
+                        <Text
+                          key={`y-tick-${idx}`}
+                          x={yTickLabelX}
+                          y={yPx - 7}
+                          width={34}
+                          align={yTickAlign}
+                          text={formatTickValue(yValue)}
+                          fontSize={11}
+                          fill="#444"
+                          listening={false}
+                        />
+                      );
+                    })}
+
+                    <Text
+                      x={graphX + graphW - 12}
+                      y={Math.max(graphY + 2, xAxisY - 16)}
+                      text="x"
+                      fontSize={13}
+                      fontStyle="bold"
+                      fill={graphViewport.axisColor}
+                      listening={false}
+                    />
+                    <Text
+                      x={Math.min(graphX + graphW - 12, yAxisX + 6)}
+                      y={graphY + 2}
+                      text="y"
+                      fontSize={13}
+                      fontStyle="bold"
+                      fill={graphViewport.axisColor}
+                      listening={false}
+                    />
+
+                    {graphViewport.showBorder && (
+                      <Rect
+                        x={graphX}
+                        y={graphY}
+                        width={graphW}
+                        height={graphH}
+                        stroke={graphViewport.borderColor}
+                        strokeWidth={1}
+                        opacity={graphViewport.borderOpacity}
+                        listening={false}
+                      />
+                    )}
+                  </>
+                );
+              })()}
+            </Layer>
+
+          {/* Highlights */}
           <Layer>
             {highlights.map((highlight) => (
               <Rect
                 key={highlight.id}
                 x={highlight.x * dimensions.width}
                 y={highlight.y * dimensions.width}
+                y={highlight.y * dimensions.width}
                 width={highlight.width * dimensions.width}
+                height={highlight.height * dimensions.width}
                 height={highlight.height * dimensions.width}
                 fill={highlight.color}
               />
             ))}
           </Layer>
+
+          {/* Strokes (shapes + freehand) */}
 
           {/* Strokes (shapes + freehand) */}
           <Layer>
@@ -1799,11 +2004,14 @@ export function Whiteboard({
           </Layer>
 
           {/* Text */}
+
+          {/* Text */}
           <Layer>
             {textItems.map((item) => (
               <Text
                 key={item.id}
                 x={item.x * dimensions.width}
+                y={item.y * dimensions.width}
                 y={item.y * dimensions.width}
                 text={item.text}
                 fontSize={item.fontSize}

@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
 
+<<<<<<< HEAD
+=======
+env:
+  PROJECT_ID: project-c3019c85-4428-4c46-9c2
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/project-c3019c85-4428-4c46-9c2/cloud-run-source-deploy
+
+>>>>>>> origin/main
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -18,9 +26,95 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+<<<<<<< HEAD
       - name: Deploy all services
         run: bash infra/deploy.sh
         env:
           PROJECT_ID: project-c3019c85-4428-4c46-9c2
           REGION: us-central1
           BUCKET: sona-canvases-your-suffix
+=======
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      # ── Session ──────────────────────────────────────────────────────────────
+      - name: Build and push session
+        run: |
+          docker build -t $REGISTRY/sona-session:$GITHUB_SHA ./services/session
+          docker push $REGISTRY/sona-session:$GITHUB_SHA
+
+      - name: Deploy session
+        run: |
+          gcloud run deploy sona-session \
+            --image=$REGISTRY/sona-session:$GITHUB_SHA \
+            --region=$REGION \
+            --port=8003 \
+            --allow-unauthenticated \
+            --service-account=sona-session-sa@$PROJECT_ID.iam.gserviceaccount.com \
+            --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,USE_FIRESTORE=true,FIRESTORE_DATABASE=(default),GCS_BUCKET=sona-canvases-your-suffix,SESSION_AUTH_ENABLED=true"
+
+      # ── Drawing ──────────────────────────────────────────────────────────────
+      - name: Build and push drawing
+        run: |
+          docker build -t $REGISTRY/sona-drawing:$GITHUB_SHA ./services/drawing
+          docker push $REGISTRY/sona-drawing:$GITHUB_SHA
+
+      - name: Deploy drawing
+        run: |
+          SESSION_URL=$(gcloud run services describe sona-session --region=$REGION --format='value(status.url)')
+          gcloud run deploy sona-drawing \
+            --image=$REGISTRY/sona-drawing:$GITHUB_SHA \
+            --region=$REGION \
+            --port=8002 \
+            --allow-unauthenticated \
+            --timeout=3600 \
+            --service-account=sona-drawing-sa@$PROJECT_ID.iam.gserviceaccount.com \
+            --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,USE_FIRESTORE=true,FIRESTORE_DATABASE=(default),DRAWING_AUTH_ENABLED=true,SESSION_SERVICE_URL=$SESSION_URL"
+
+      # ── Orchestrator ─────────────────────────────────────────────────────────
+      - name: Build and push orchestrator
+        run: |
+          docker build -t $REGISTRY/sona-orchestrator:$GITHUB_SHA ./services/orchestrator
+          docker push $REGISTRY/sona-orchestrator:$GITHUB_SHA
+
+      - name: Deploy orchestrator
+        run: |
+          SESSION_URL=$(gcloud run services describe sona-session --region=$REGION --format='value(status.url)')
+          DRAWING_URL=$(gcloud run services describe sona-drawing --region=$REGION --format='value(status.url)')
+          gcloud run deploy sona-orchestrator \
+            --image=$REGISTRY/sona-orchestrator:$GITHUB_SHA \
+            --region=$REGION \
+            --port=8001 \
+            --allow-unauthenticated \
+            --timeout=3600 \
+            --service-account=sona-orchestrator-sa@$PROJECT_ID.iam.gserviceaccount.com \
+            --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,ORCHESTRATOR_AUTH_ENABLED=true,SESSION_SERVICE_URL=$SESSION_URL,DRAWING_SERVICE_URL=$DRAWING_URL"
+
+      # ── Frontend ─────────────────────────────────────────────────────────────
+      - name: Build and push frontend
+        run: |
+          docker build \
+            --build-arg VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }} \
+            --build-arg VITE_SESSION_HTTP_BASE=${{ secrets.VITE_SESSION_HTTP_BASE }} \
+            --build-arg VITE_DRAWING_HTTP_BASE=${{ secrets.VITE_DRAWING_HTTP_BASE }} \
+            --build-arg VITE_DRAWING_WS_BASE=${{ secrets.VITE_DRAWING_WS_BASE }} \
+            --build-arg VITE_ORCHESTRATOR_WS_BASE=${{ secrets.VITE_ORCHESTRATOR_WS_BASE }} \
+            -t $REGISTRY/sona-frontend:$GITHUB_SHA ./frontend
+          docker push $REGISTRY/sona-frontend:$GITHUB_SHA
+
+      - name: Deploy frontend
+        run: |
+          gcloud run deploy sona-frontend \
+            --image=$REGISTRY/sona-frontend:$GITHUB_SHA \
+            --region=$REGION \
+            --port=3000 \
+            --allow-unauthenticated
+
+      # ── Fix CORS ─────────────────────────────────────────────────────────────
+      - name: Update CORS on all backends
+        run: |
+          FRONTEND_URL=$(gcloud run services describe sona-frontend --region=$REGION --format='value(status.url)')
+          gcloud run services update sona-session      --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
+          gcloud run services update sona-drawing      --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
+          gcloud run services update sona-orchestrator --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
+>>>>>>> origin/main
