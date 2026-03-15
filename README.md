@@ -64,7 +64,7 @@ uvicorn main:app --reload --port 8003
 | `GCS_BUCKET` | yes (if using snapshots) | Cloud Storage bucket name |
 | `SESSION_AUTH_ENABLED` | no | `false` for local dev, `true` in production |
 | `SESSION_AUTH_AUDIENCE` | if auth enabled | Firebase project ID |
-| `FRONTEND_URL` | no | Allowed CORS origin (default: `http://localhost:5173`) |
+| `FRONTEND_URL` | no | Allowed CORS origin (default: `http://localhost:3000`) |
 
 Verify it works:
 ```bash
@@ -136,7 +136,7 @@ curl http://localhost:8001/health
 cd frontend
 cp .env.example .env.local   # see frontend/.env.example for all required vars
 npm install
-npm run dev   # http://localhost:5173
+npm run dev   # http://localhost:3000
 ```
 
 **`.env.local` variables:**
