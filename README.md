@@ -1,5 +1,7 @@
 # Sona — AI Math Tutor
 
+![Architecture Diagram](ARCHITECTURE-DIAGRAM.jpeg)
+
 **Live demo:** https://sona-frontend-5h3qmaqogq-uc.a.run.app
 
 Sona is a voice-first AI math tutor with a live collaborative whiteboard. Students interact via voice while Sona draws progressively on an HTML5 canvas in real-time, synchronized with speech. Built for the Google Gemini Live Agent Challenge.
