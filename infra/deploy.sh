@@ -62,12 +62,16 @@ ORCH_URL=$(gcloud run services describe "$ORCH_SERVICE" --region "$REGION" --for
 echo "Orchestrator URL: $ORCH_URL"
 
 # ─── 4. Frontend ──────────────────────────────────────────────────────────────
-gcloud run deploy sona-frontend \
-    --source ./frontend \
-    --region us-central1 \
-    --allow-unauthenticated \
-    --port 3000 \
-    --set-build-env-vars "^@@^VITE_FIREBASE_API_KEY=AIzaSyAgg587h_-GbUSxzdf1d_ZTBD_zjmD56J0@@VITE_SESSION_HTTP_BASE=https://sona-session-5h3qmaqogq-uc.a.run.app@@VITE_DRAWING_HTTP_BASE=https://sona-drawing-5h3qmaqogq-uc.a.run.app@@VITE_DRAWING_WS_BASE=wss://sona-drawing-5h3qmaqogq-uc.a.run.app@@VITE_ORCHESTRATOR_WS_BASE=wss://sona-orchestrator-5h3qmaqogq-uc.a.run.app" 
+echo ""
+echo ">>> [4/4] Deploying frontend..."
+gcloud run deploy "$FRONTEND_SERVICE" \
+  --source ./frontend \
+  --region "$REGION" \
+  --allow-unauthenticated \
+  --port 3000
+
+FRONTEND_URL=$(gcloud run services describe "$FRONTEND_SERVICE" --region "$REGION" --format='value(status.url)')
+echo "Frontend URL: $FRONTEND_URL"
 
 # ─── 5. Fix CORS on all backends ──────────────────────────────────────────────
 echo ""
