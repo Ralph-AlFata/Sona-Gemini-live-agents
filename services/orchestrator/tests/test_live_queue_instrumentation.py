@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import logging
+
 from google.adk.agents.live_request_queue import LiveRequest
 from google.genai import types
+from pydantic import BaseModel
+import pytest
 
 import main
 
 
 async def _drain(queue: main.InstrumentedLiveRequestQueue) -> LiveRequest:
     return await queue.get()
+
+
+class _LiveRequestWithoutTurnComplete(BaseModel):
+    content: types.Content | None = None
+    blob: types.Blob | None = None
+    activity_start: types.ActivityStart | None = None
+    activity_end: types.ActivityEnd | None = None
+    close: bool = False
 
 
 def test_instrumented_queue_preserves_turn_complete_flag() -> None:
@@ -21,6 +33,27 @@ def test_instrumented_queue_preserves_turn_complete_flag() -> None:
     request = __import__("asyncio").run(_drain(queue))
     assert request.content is not None
     assert request.turn_complete is False
+
+
+def test_instrumented_queue_tolerates_live_request_without_turn_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(main, "LiveRequest", _LiveRequestWithoutTurnComplete)
+
+    queue = main.InstrumentedLiveRequestQueue(session_id="s1", turn_id=1)
+    with caplog.at_level(logging.WARNING):
+        queue.send_content(
+            types.Content(role="user", parts=[types.Part.from_text(text="canvas")]),
+            turn_complete=False,
+            source="canvas_context",
+        )
+
+    request = __import__("asyncio").run(_drain(queue))
+    assert request.content is not None
+    assert getattr(request, "turn_complete", None) is None
+    assert main._effective_live_request_turn_complete(request) is True
+    assert "LIVE_REQUEST_TURN_COMPLETE_UNSUPPORTED" in caplog.text
 
 
 def test_infer_function_response_feedback_source() -> None:

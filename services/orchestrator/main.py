@@ -17,11 +17,14 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+import google.adk as google_adk
 from google.adk.agents.live_request_queue import LiveRequest, LiveRequestQueue
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
+import google.genai as google_genai
 from google.genai import types
+import pydantic
 
 from agent.canvas_context import build_canvas_turn_content
 from agent.tools._cursor_store import (
@@ -116,6 +119,73 @@ def _infer_live_request_source(
     return "unknown"
 
 
+def _live_request_field_names() -> tuple[str, ...]:
+    model_fields = getattr(LiveRequest, "model_fields", None)
+    if isinstance(model_fields, dict):
+        return tuple(sorted(model_fields))
+    annotations = getattr(LiveRequest, "__annotations__", None)
+    if isinstance(annotations, dict):
+        return tuple(sorted(annotations))
+    return ()
+
+
+def _live_request_supports_turn_complete() -> bool:
+    return "turn_complete" in _live_request_field_names()
+
+
+def _build_live_request(
+    *,
+    content: types.Content | None = None,
+    blob: types.Blob | None = None,
+    activity_start: types.ActivityStart | None = None,
+    activity_end: types.ActivityEnd | None = None,
+    close: bool = False,
+    turn_complete: bool | None = None,
+) -> LiveRequest:
+    kwargs: dict[str, Any] = {
+        "content": content,
+        "blob": blob,
+        "activity_start": activity_start,
+        "activity_end": activity_end,
+        "close": close,
+    }
+    if turn_complete is not None:
+        if _live_request_supports_turn_complete():
+            kwargs["turn_complete"] = turn_complete
+        elif turn_complete is False:
+            logger.warning(
+                "LIVE_REQUEST_TURN_COMPLETE_UNSUPPORTED fields=%s requested=%s revision=%s",
+                ",".join(_live_request_field_names()) or "unknown",
+                turn_complete,
+                os.getenv("K_REVISION") or "local",
+            )
+    return LiveRequest(**kwargs)
+
+
+def _effective_live_request_turn_complete(request: LiveRequest) -> bool | None:
+    if request.content is None:
+        return None
+    value = getattr(request, "turn_complete", None)
+    if value is None:
+        return True
+    return value
+
+
+def _log_live_request_runtime() -> None:
+    logger.info(
+        "LIVE_REQUEST_RUNTIME revision=%s adk=%s genai=%s pydantic=%s supports_turn_complete=%s fields=%s",
+        os.getenv("K_REVISION") or "local",
+        getattr(google_adk, "__version__", "unknown"),
+        getattr(google_genai, "__version__", "unknown"),
+        getattr(pydantic, "__version__", "unknown"),
+        _live_request_supports_turn_complete(),
+        ",".join(_live_request_field_names()) or "unknown",
+    )
+
+
+_log_live_request_runtime()
+
+
 @dataclass(slots=True)
 class _LiveRequestMeta:
     sequence: int
@@ -159,11 +229,7 @@ class InstrumentedLiveRequestQueue(LiveRequestQueue):
 
     def _log_enqueue(self, request: LiveRequest, source: str) -> None:
         self._sequence += 1
-        effective_turn_complete = (
-            request.turn_complete if request.content is not None else None
-        )
-        if request.content is not None and effective_turn_complete is None:
-            effective_turn_complete = True
+        effective_turn_complete = _effective_live_request_turn_complete(request)
         summary = _summarize_content_for_log(request.content)
         self._meta_queue.put_nowait(
             _LiveRequestMeta(
@@ -188,7 +254,7 @@ class InstrumentedLiveRequestQueue(LiveRequestQueue):
         )
 
     def close(self, source: str | None = None):
-        request = LiveRequest(close=True)
+        request = _build_live_request(close=True)
         self._enqueue(request, _infer_live_request_source(request, source))
 
     def send_content(
@@ -197,19 +263,19 @@ class InstrumentedLiveRequestQueue(LiveRequestQueue):
         turn_complete: bool = True,
         source: str | None = None,
     ):
-        request = LiveRequest(content=content, turn_complete=turn_complete)
+        request = _build_live_request(content=content, turn_complete=turn_complete)
         self._enqueue(request, _infer_live_request_source(request, source))
 
     def send_realtime(self, blob: types.Blob, source: str | None = None):
-        request = LiveRequest(blob=blob)
+        request = _build_live_request(blob=blob)
         self._enqueue(request, _infer_live_request_source(request, source))
 
     def send_activity_start(self, source: str | None = None):
-        request = LiveRequest(activity_start=types.ActivityStart())
+        request = _build_live_request(activity_start=types.ActivityStart())
         self._enqueue(request, _infer_live_request_source(request, source))
 
     def send_activity_end(self, source: str | None = None):
-        request = LiveRequest(activity_end=types.ActivityEnd())
+        request = _build_live_request(activity_end=types.ActivityEnd())
         self._enqueue(request, _infer_live_request_source(request, source))
 
     def send(self, req: LiveRequest, source: str | None = None):
@@ -218,11 +284,7 @@ class InstrumentedLiveRequestQueue(LiveRequestQueue):
     async def get(self) -> LiveRequest:
         request = await self._queue.get()
         meta = await self._meta_queue.get()
-        effective_turn_complete = (
-            request.turn_complete if request.content is not None else None
-        )
-        if request.content is not None and effective_turn_complete is None:
-            effective_turn_complete = True
+        effective_turn_complete = _effective_live_request_turn_complete(request)
         logger.info(
             "LIVE_QUEUE_DEQUEUE session_id=%s turn_id=%s seq=%s source=%s close=%s has_content=%s has_blob=%s activity_start=%s activity_end=%s turn_complete=%s summary=%s",
             self._session_id,
