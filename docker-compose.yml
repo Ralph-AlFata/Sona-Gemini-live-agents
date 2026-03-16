@@ -1,3 +1,15 @@
+# Sona — local Docker Compose
+#
+# Usage:
+#   1. cp .env.example .env   (fill in GOOGLE_CLOUD_PROJECT, GOOGLE_API_KEY, VITE_FIREBASE_API_KEY)
+#   2. docker compose up --build
+#   3. Open http://localhost:3000
+#
+# All auth is disabled by default. Services communicate over the internal
+# Docker network using service names (session, drawing, orchestrator).
+# The frontend is compiled with localhost URLs so the browser can reach
+# the backend ports directly.
+
 services:
   session:
     build:
@@ -5,6 +17,11 @@ services:
     ports:
       - "8003:8003"
     env_file: .env
+    environment:
+      # Local dev defaults — override in .env if needed
+      USE_FIRESTORE: "false"
+      SESSION_AUTH_ENABLED: "false"
+      FRONTEND_URL: "http://localhost:3000"
     networks:
       - sona-net
     healthcheck:
@@ -20,8 +37,17 @@ services:
     ports:
       - "8002:8002"
     env_file: .env
+    environment:
+      USE_FIRESTORE: "false"
+      DRAWING_AUTH_ENABLED: "false"
+      FRONTEND_URL: "http://localhost:3000"
+      # Internal Docker network URL — drawing talks to session server-side
+      SESSION_SERVICE_URL: "http://session:8003"
     networks:
       - sona-net
+    depends_on:
+      session:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 15s
@@ -35,6 +61,12 @@ services:
     ports:
       - "8001:8001"
     env_file: .env
+    environment:
+      ORCHESTRATOR_AUTH_ENABLED: "false"
+      FRONTEND_URL: "http://localhost:3000"
+      # Internal Docker network URLs
+      SESSION_SERVICE_URL: "http://session:8003"
+      DRAWING_SERVICE_URL: "http://drawing:8002"
     networks:
       - sona-net
     depends_on:
@@ -52,9 +84,15 @@ services:
   frontend:
     build:
       context: ./frontend
+      args:
+        # Browser-facing URLs — must be localhost, not Docker service names
+        VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY:-}
+        VITE_SESSION_HTTP_BASE: "http://localhost:8003"
+        VITE_DRAWING_HTTP_BASE: "http://localhost:8002"
+        VITE_DRAWING_WS_BASE: "ws://localhost:8002"
+        VITE_ORCHESTRATOR_WS_BASE: "ws://localhost:8001"
     ports:
       - "3000:3000"
-    env_file: .env
     networks:
       - sona-net
     depends_on:
