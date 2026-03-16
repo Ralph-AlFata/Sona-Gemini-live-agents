@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import base64
+import json
 
 import httpx
 import pytest
 
 from agent import canvas_context
-from agent.canvas_context import build_canvas_turn_content, fetch_canvas_description
+from agent.canvas_context import build_canvas_turn_content, fetch_canvas_state_json
 
 
 @pytest.mark.asyncio
-async def test_fetch_canvas_description_mixed_elements() -> None:
+async def test_fetch_canvas_state_json_mixed_elements() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/sessions/s1/canvas_state"
         assert request.headers["Authorization"] == "Bearer token-123"
@@ -65,19 +66,15 @@ async def test_fetch_canvas_description_mixed_elements() -> None:
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(httpx, "AsyncClient", fake_client)
-        description = await fetch_canvas_description("s1", "http://drawing:8002", "token-123")
+        canvas_state = await fetch_canvas_state_json("s1", "http://drawing:8002", "token-123")
 
-    assert description is not None
-    assert "[STUDENT] right_triangle id=shape_1" in description
-    assert "labels: ['a', 'b', 'c']" in description
-    assert "side_labels: [side0='a', side1='c', side2='b']" in description
-    assert "hypotenuse_side=side1" in description
-    assert '[TUTOR] text "Pythagorean theorem"' in description
-    assert "[STUDENT] freehand stroke" in description
+    assert canvas_state["session_id"] == "s1"
+    assert canvas_state["element_count"] == 3
+    assert isinstance(canvas_state["elements"], list)
 
 
 @pytest.mark.asyncio
-async def test_fetch_canvas_description_empty_returns_none() -> None:
+async def test_fetch_canvas_state_json_empty_returns_empty_payload() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"session_id": "s1", "element_count": 0, "elements": []})
 
@@ -90,26 +87,41 @@ async def test_fetch_canvas_description_empty_returns_none() -> None:
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(httpx, "AsyncClient", fake_client)
-        description = await fetch_canvas_description("s1", "http://drawing:8002")
+        canvas_state = await fetch_canvas_state_json("s1", "http://drawing:8002")
 
-    assert description is None
+    assert canvas_state == {"session_id": "s1", "element_count": 0, "elements": []}
 
 
 @pytest.mark.asyncio
-async def test_build_canvas_turn_content_combines_snapshot_and_text(
+async def test_build_canvas_turn_content_combines_snapshot_and_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_fetch_canvas_description(
+    async def fake_fetch_canvas_state_json(
         session_id: str,
         drawing_service_url: str,
         auth_token: str | None = None,
-    ) -> str | None:
+    ) -> dict:
         assert session_id == "session-1"
         assert drawing_service_url == "http://drawing:8002"
         assert auth_token == "token-abc"
-        return "CURRENT CANVAS STATE:\n[STUDENT] triangle at (0.10, 0.20), size 0.30x0.40"
+        return {
+            "session_id": "session-1",
+            "element_count": 1,
+            "elements": [
+                {
+                    "id": "shape_1",
+                    "type": "right_triangle",
+                    "points": [
+                        {"x": 0.1, "y": 0.6},
+                        {"x": 0.4, "y": 0.6},
+                        {"x": 0.1, "y": 0.2},
+                        {"x": 0.1, "y": 0.6},
+                    ],
+                }
+            ],
+        }
 
-    monkeypatch.setattr(canvas_context, "fetch_canvas_description", fake_fetch_canvas_description)
+    monkeypatch.setattr(canvas_context, "fetch_canvas_state_json", fake_fetch_canvas_state_json)
     content = await build_canvas_turn_content(
         "session-1",
         "http://drawing:8002",
@@ -123,4 +135,7 @@ async def test_build_canvas_turn_content_combines_snapshot_and_text(
     assert content.parts[0].inline_data.mime_type == "image/jpeg"
     assert content.parts[0].inline_data.data == b"jpeg-bytes"
     assert content.parts[1].text is not None
-    assert "CURRENT CANVAS STATE" in content.parts[1].text
+    assert content.parts[1].text.startswith("CURRENT_CANVAS_STATE_JSON:\n")
+    payload = json.loads(content.parts[1].text.split("\n", 1)[1])
+    assert payload["element_count"] == 1
+    assert payload["elements"][0]["hypotenuse_side"] == 1

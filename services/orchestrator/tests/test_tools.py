@@ -943,6 +943,26 @@ async def test_unified_move_cursor_missing_coords_returns_error_not_exception() 
 
 
 @pytest.mark.asyncio
+async def test_edit_canvas_text_falls_back_to_draw_text(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_test")
+    monkeypatch.setattr(unified, "resolve_session_id", lambda _ctx: "s_test")
+
+    result = await unified.edit_canvas(
+        action="text",
+        text="$34^\\circ$",
+        text_format="latex",
+    )
+
+    assert result["status"] == "success"
+    assert _fake_client.calls[0]["operation"] == "draw_text"
+    assert _fake_client.calls[0]["payload"]["text"] == "$34^\\circ$"
+    assert _fake_client.calls[0]["payload"]["text_format"] == "latex"
+
+
+@pytest.mark.asyncio
 async def test_canvas_actions_executes_multiple_actions_in_order(_fake_client: _FakeClient) -> None:
     context = SimpleNamespace(state={"session_id": "s_canvas_actions"})
 

@@ -108,6 +108,8 @@ class DrawTextInput(_StrictModel):
     y: float | None = Field(default=None, ge=0.0, le=2.0)
     next: NextDirection = "below"
     font_size: int = Field(default=24, ge=8, le=256)
+    text_format: Literal["plain", "latex"] = "plain"
+    display_mode: bool = False
     style: ToolStyle = Field(default_factory=ToolStyle)
 
     @model_validator(mode="after")

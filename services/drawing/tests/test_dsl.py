@@ -79,6 +79,32 @@ async def test_set_graph_viewport_emits_single_viewport_message() -> None:
     assert response.created_element_ids == []
 
 
+async def test_draw_text_preserves_latex_rendering_metadata() -> None:
+    store = InMemoryElementStore()
+    command = DrawCommandRequest(
+        command_id="cmd_text_latex",
+        session_id="s1",
+        operation="draw_text",
+        payload={
+            "text": "$$x^2 + y^2 = z^2$$",
+            "x": 0.2,
+            "y": 0.3,
+            "font_size": 28,
+            "text_format": "latex",
+            "display_mode": True,
+            "style": {"stroke_color": "#111111"},
+        },
+    )
+
+    messages, response = await apply_command(command, store)
+
+    assert response.applied_count == 1
+    assert len(messages) == 1
+    created_payload = messages[0].payload["payload"]
+    assert created_payload["text_format"] == "latex"
+    assert created_payload["display_mode"] is True
+
+
 async def test_move_and_resize_transform_element() -> None:
     store = InMemoryElementStore()
     create = DrawCommandRequest(

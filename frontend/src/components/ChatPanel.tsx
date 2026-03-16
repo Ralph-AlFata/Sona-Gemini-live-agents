@@ -24,7 +24,7 @@ interface ChatPanelProps {
   userId: string;
   sessionId: string;
   authToken: string;
-  requestCanvasSnapshot?: () => Promise<void>;
+  requestCanvasSnapshot?: () => Promise<string | null>;
 }
 
 async function readFileAsDataUrl(file: File): Promise<string> {
@@ -206,7 +206,6 @@ export function ChatPanel({
     if (playerNodeRef.current) {
       playerNodeRef.current.port.postMessage({ command: "endOfAudio" });
     }
-    await requestCanvasSnapshot?.();
     isSpeakingRef.current = true;
     setIsSpeaking(true);
     const sent = sendActivityStart();
@@ -216,11 +215,12 @@ export function ChatPanel({
     }
   }
 
-  function stopSpeaking(): void {
+  async function stopSpeaking(): Promise<void> {
     if (!isSpeakingRef.current) return;
     isSpeakingRef.current = false;
     setIsSpeaking(false);
-    sendActivityEnd();
+    const snapshotBase64Data = await requestCanvasSnapshot?.();
+    sendActivityEnd(snapshotBase64Data ?? undefined);
   }
 
   useEffect(() => {
@@ -322,11 +322,15 @@ export function ChatPanel({
               e.preventDefault();
               void startSpeaking();
             }}
-            onMouseUp={stopSpeaking}
-            onMouseLeave={stopSpeaking}
+            onMouseUp={() => {
+              void stopSpeaking();
+            }}
+            onMouseLeave={() => {
+              void stopSpeaking();
+            }}
             onTouchEnd={(e) => {
               e.preventDefault();
-              stopSpeaking();
+              void stopSpeaking();
             }}
           >
             {isSpeaking ? "Speaking..." : "Hold to Talk"}

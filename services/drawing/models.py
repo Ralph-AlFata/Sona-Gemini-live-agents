@@ -76,6 +76,8 @@ class DrawTextPayload(_StrictBase):
     x: float = Field(ge=0.0, le=1.0)
     y: float = Field(ge=0.0, le=2.0)
     font_size: int = Field(default=24, ge=8, le=256)
+    text_format: Literal["plain", "latex"] = "plain"
+    display_mode: bool = False
     style: StylePayload = Field(default_factory=StylePayload)
 
 

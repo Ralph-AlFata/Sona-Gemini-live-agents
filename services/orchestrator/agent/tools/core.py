@@ -428,6 +428,8 @@ async def draw_text(
     y: float | None = None,
     next: str = "below",
     font_size: int = 24,
+    text_format: str = "plain",
+    display_mode: bool = False,
     stroke_color: str = "#111111",
     stroke_width: float = 2.0,
     fill_color: str | None = None,
@@ -472,6 +474,8 @@ async def draw_text(
             "text": text,
             "next": next,
             "font_size": font_size,
+            "text_format": text_format,
+            "display_mode": display_mode,
             "style": {
                 "stroke_color": stroke_color,
                 "stroke_width": stroke_width,
@@ -490,6 +494,8 @@ async def draw_text(
             "y": y,
             "next": next,
             "font_size": font_size,
+            "text_format": text_format,
+            "display_mode": display_mode,
             "style": {
                 "stroke_color": stroke_color,
                 "stroke_width": stroke_width,

@@ -1140,6 +1140,23 @@ async def websocket_endpoint(
                         active_speaking_turn_id = None
                         active_speaking_audio_bytes = 0
                         continue
+                    raw_snapshot = json_message.get("snapshot")
+                    if isinstance(raw_snapshot, dict):
+                        raw_snapshot_data = raw_snapshot.get("data")
+                        if isinstance(raw_snapshot_data, str) and raw_snapshot_data.strip():
+                            try:
+                                canvas_snapshot_bytes = base64.b64decode(raw_snapshot_data)
+                            except Exception:
+                                logger.warning(
+                                    "LIVE_CANVAS_SNAPSHOT_INVALID session_id=%s reason=activity_end_decode_failed",
+                                    session_id,
+                                )
+                            else:
+                                logger.info(
+                                    "CANVAS_SNAPSHOT_RECEIVED session_id=%s size=%d source=activity_end",
+                                    session_id,
+                                    len(canvas_snapshot_bytes),
+                                )
                     queue.send_activity_end(source="browser_activity_end")
                     logger.info(
                         "LIVE_ACTIVITY_AUDIO_STREAM_COMPLETE session_id=%s turn_id=%s bytes=%s",

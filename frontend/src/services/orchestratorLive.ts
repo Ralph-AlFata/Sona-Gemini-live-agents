@@ -204,9 +204,15 @@ export function sendActivityStart(): boolean {
   return true;
 }
 
-export function sendActivityEnd(): boolean {
+export function sendActivityEnd(snapshotBase64Data?: string): boolean {
   if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-  socket.send(JSON.stringify({ type: "activity_end" }));
+  socket.send(
+    JSON.stringify(
+      snapshotBase64Data
+        ? { type: "activity_end", snapshot: { data: snapshotBase64Data } }
+        : { type: "activity_end" },
+    ),
+  );
   return true;
 }
 

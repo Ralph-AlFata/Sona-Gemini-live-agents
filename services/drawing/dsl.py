@@ -97,13 +97,25 @@ def _build_shape_element(payload: DrawShapePayload) -> tuple[dict, BBox]:
     return draw_payload, BBox(min_x, min_y, max(max_x - min_x, 0.001), max(max_y - min_y, 0.001))
 
 def _build_text_element(payload: DrawTextPayload) -> tuple[dict, BBox]:
-    approx_width = min(0.8, 0.012 * len(payload.text) * (payload.font_size / 24))
+    layout_text = payload.text.strip()
+    if payload.text_format == "latex":
+        if layout_text.startswith("$$") and layout_text.endswith("$$"):
+            layout_text = layout_text[2:-2].strip()
+        elif layout_text.startswith("\\[") and layout_text.endswith("\\]"):
+            layout_text = layout_text[2:-2].strip()
+        elif layout_text.startswith("$") and layout_text.endswith("$"):
+            layout_text = layout_text[1:-1].strip()
+        elif layout_text.startswith("\\(") and layout_text.endswith("\\)"):
+            layout_text = layout_text[2:-2].strip()
+    approx_width = min(0.8, 0.012 * max(len(layout_text), 1) * (payload.font_size / 24))
     approx_height = min(0.25, 0.03 * (payload.font_size / 24))
     draw_payload = {
         "text": payload.text,
         "x": payload.x,
         "y": payload.y,
         "font_size": payload.font_size,
+        "text_format": payload.text_format,
+        "display_mode": payload.display_mode,
         "style": _style_to_dict(payload.style),
     }
     return draw_payload, BBox(payload.x, payload.y, approx_width, approx_height)
@@ -611,6 +623,8 @@ async def apply_command(
                         "x": draw_payload["x"],
                         "y": draw_payload["y"],
                         "font_size": draw_payload["font_size"],
+                        "text_format": draw_payload["text_format"],
+                        "display_mode": draw_payload["display_mode"],
                         "source": command.source,
                         **_translate_style_for_frontend(draw_payload["style"]),
                     },

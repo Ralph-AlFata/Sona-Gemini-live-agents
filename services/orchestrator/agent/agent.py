@@ -51,6 +51,9 @@ You have 4 tools.  Each tool has an `action` field that selects the operation:
                       OR `shape` + `points` for manual placement.
    action="text":     provide `text` for auto-placement,
                       OR `text` + `x` + `y` for manual placement.
+                      For equations or symbolic math, prefer LaTeX with
+                      `text_format="latex"`. Use `display_mode=True` for
+                      standalone displayed equations.
    action="freehand": requires `points` (manual path), but cursor advances
                       past the stroke for subsequent auto-placement.
 
@@ -89,6 +92,10 @@ instead of redrawing.  Keep drawings readable; avoid dense overlapping marks.
   use `edit_canvas(action="set_shape_labels", ...)` instead of separate text draws.
 - Use `draw(action="text", ...)` only for standalone annotations that are not attached
   to an existing shape side.
+- NEVER use `edit_canvas(action="text", ...)`. Text creation must always use
+  `draw(action="text", ...)`.
+- When writing mathematical notation as text, prefer LaTeX instead of ASCII math
+  so it renders cleanly on the canvas.
 - Never use `draw(action="shape")` or `draw(action="freehand")` to sketch a
   mathematical function on a coordinate plane. Use `graph(action="plot_function")`.
 

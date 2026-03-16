@@ -59,6 +59,8 @@ async def draw(
     y: float | None = None,
     next: str = "below",
     font_size: int = 24,
+    text_format: str = "plain",
+    display_mode: bool = False,
     # common style
     stroke_color: str = "#111111",
     stroke_width: float = 2.0,
@@ -92,6 +94,8 @@ async def draw(
                      `points` so the orientation is exact.
       "text"     — place text. Requires `text`. Omit `x` and `y` for automatic
                    placement, or provide both for manual placement.
+                   For mathematical notation, set `text_format="latex"`.
+                   Use `display_mode=True` for standalone displayed equations.
       "freehand" — draw a freehand stroke.  Requires `points`.
                    Do NOT use this to plot mathematical functions on axes.
 
@@ -145,6 +149,8 @@ async def draw(
             y=y,
             next=next,
             font_size=font_size,
+            text_format=text_format,
+            display_mode=display_mode,
             stroke_color=stroke_color,
             stroke_width=stroke_width,
             fill_color=fill_color,
@@ -183,6 +189,7 @@ async def edit_canvas(
     # element targeting
     element_ids: list[str] | None = None,
     element_id: str | None = None,
+    text: str | None = None,
     # move
     dx: float | None = None,
     dy: float | None = None,
@@ -199,6 +206,9 @@ async def edit_canvas(
     mode: str = "replace",
     labels: list[str] | None = None,
     font_size: int = 22,
+    next: str = "below",
+    text_format: str = "plain",
+    display_mode: bool = False,
     # update_style
     stroke_color: str | None = None,
     stroke_width: float | None = None,
@@ -245,7 +255,30 @@ async def edit_canvas(
       same call unchanged.
     - If the shape has not been created yet, create it first with `draw(...)`
       and only then call `edit_canvas(...)` using the returned ID.
+    - Never use `edit_canvas(action="text", ...)` to create text. That should
+      be `draw(action="text", ...)`.
     """
+    if action == "text":
+        if text is None:
+            raise ValueError("action='text' requires 'text'")
+        return await _draw_text(
+            text=text,
+            x=x,
+            y=y,
+            next=next,
+            font_size=font_size,
+            text_format=text_format,
+            display_mode=display_mode,
+            stroke_color=stroke_color or "#111111",
+            stroke_width=stroke_width or 2.0,
+            fill_color=fill_color,
+            opacity=opacity if opacity is not None else 1.0,
+            z_index=z_index if z_index is not None else 0,
+            delay_ms=delay_ms if delay_ms is not None else 30,
+            animate=True,
+            tool_context=tool_context,
+        )
+
     if action == "delete":
         if not element_ids:
             raise ValueError("action='delete' requires 'element_ids'")

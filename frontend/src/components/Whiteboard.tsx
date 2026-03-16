@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Stage, Layer, Rect, Text, Line, Shape, Group } from "react-konva";
+import { Stage, Layer, Rect, Text, Line, Shape, Group, Image as KonvaImage } from "react-konva";
 import type { Stage as KonvaStage } from "konva/lib/Stage";
 import { DrawingToolbar } from "./DrawingToolbar";
 import {
@@ -9,12 +9,18 @@ import {
   type PointNorm,
 } from "../hooks/useDrawingTool";
 import type { DSLMessageRaw } from "../services/drawingSocket";
-import { sendCanvasMetrics, sendCanvasSnapshot } from "../services/orchestratorLive";
+import { sendCanvasMetrics } from "../services/orchestratorLive";
 import {
   deleteElement,
   postDraw,
   type SessionElementSnapshot,
 } from "../services/drawingService";
+import {
+  estimateLatexSize,
+  getLatexRender,
+  resolveCanvasText,
+  type CanvasTextFormat,
+} from "../services/latexRenderer";
 import getStroke from "perfect-freehand";
 
 interface NormalizedBBox {
@@ -53,12 +59,15 @@ interface GraphViewport {
 interface TextItem {
   id: string;
   elementId: string;
-  text: string;
+  displayMode: boolean;
   x: number;
   y: number;
   fontSize: number;
   color: string;
+  rawText: string;
+  renderText: string;
   source: "ai" | "user";
+  textFormat: CanvasTextFormat;
 }
 
 interface StrokeItem {
@@ -96,7 +105,7 @@ interface WhiteboardProps {
   initialElements: SessionElementSnapshot[];
   sessionId: string;
   authToken: string;
-  onSnapshotExporterChange?: (exporter: (() => Promise<void>) | null) => void;
+  onSnapshotExporterChange?: (exporter: (() => Promise<string | null>) | null) => void;
 }
 
 const HANDWRITING_FONT = '"Patrick Hand", "Comic Sans MS", cursive';
@@ -488,6 +497,104 @@ function toGraphViewport(value: unknown): GraphViewport | null {
   };
 }
 
+function CanvasTextNode({
+  item,
+  widthPx,
+  onLatexMeasured,
+}: {
+  item: TextItem;
+  widthPx: number;
+  onLatexMeasured: (elementId: string, width: number, height: number) => void;
+}) {
+  const [latexImage, setLatexImage] = useState<HTMLImageElement | null>(null);
+  const [latexFailed, setLatexFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (item.textFormat !== "latex") {
+      setLatexImage(null);
+      setLatexFailed(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setLatexFailed(false);
+    getLatexRender(item.renderText, {
+      color: item.color,
+      displayMode: item.displayMode,
+      fontSize: item.fontSize,
+    })
+      .then((rendered) => {
+        if (cancelled) return;
+        setLatexImage(rendered.image);
+        onLatexMeasured(item.elementId, rendered.width, rendered.height);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setLatexImage(null);
+        setLatexFailed(true);
+        console.error("LaTeX canvas render failed", {
+          error:
+            error instanceof Error
+              ? { message: error.message, stack: error.stack }
+              : error,
+          displayMode: item.displayMode,
+          elementId: item.elementId,
+          rawText: item.rawText,
+          renderText: item.renderText,
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    item.color,
+    item.displayMode,
+    item.elementId,
+    item.fontSize,
+    item.renderText,
+    item.textFormat,
+    onLatexMeasured,
+  ]);
+
+  if (item.textFormat !== "latex" || latexFailed) {
+    return (
+      <Text
+        x={item.x * widthPx}
+        y={item.y * widthPx}
+        text={item.rawText}
+        fontSize={item.fontSize}
+        fill={item.color}
+        fontFamily={HANDWRITING_FONT}
+      />
+    );
+  }
+
+  if (!latexImage) {
+    return null;
+  }
+
+  const fallbackSize = estimateLatexSize(item.renderText, item.fontSize, item.displayMode);
+  const aspectRatio = latexImage.naturalWidth > 0 && latexImage.naturalHeight > 0
+    ? latexImage.naturalWidth / latexImage.naturalHeight
+    : fallbackSize.width / Math.max(fallbackSize.height, 1);
+  const renderHeight = Math.max(1, latexImage.naturalHeight || fallbackSize.height);
+  const renderWidth = Math.max(1, latexImage.naturalWidth || renderHeight * aspectRatio);
+
+  return (
+    <KonvaImage
+      x={item.x * widthPx}
+      y={item.y * widthPx}
+      image={latexImage}
+      width={renderWidth}
+      height={renderHeight}
+    />
+  );
+}
+
 export function Whiteboard({
   messages,
   initialElements,
@@ -511,6 +618,7 @@ export function Whiteboard({
   const processingRef = useRef(false);
   const unmountedRef = useRef(false);
   const measurementCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const latexMeasurementsRef = useRef<Record<string, { heightPx: number; widthPx: number }>>({});
   const dirtyRef = useRef(false);
 
   function clamp01(value: number): number {
@@ -545,6 +653,19 @@ export function Whiteboard({
   }
 
   function getTextBBox(text: TextItem): NormalizedBBox | null {
+    const latexMeasurement = latexMeasurementsRef.current[text.elementId];
+    if (text.textFormat === "latex" && dimensions.width > 0) {
+      const fallback = estimateLatexSize(text.renderText, text.fontSize, text.displayMode);
+      const widthPx = latexMeasurement?.widthPx ?? fallback.width;
+      const heightPx = latexMeasurement?.heightPx ?? fallback.height;
+      return {
+        x: clamp01(text.x),
+        y: clamp01(text.y),
+        width: Math.max(0.001, widthPx / dimensions.width),
+        height: Math.max(0.001, heightPx / dimensions.width),
+      };
+    }
+
     if (dimensions.width <= 0 || dimensions.height <= 0) return null;
     const canvas = measurementCanvasRef.current ?? document.createElement("canvas");
     measurementCanvasRef.current = canvas;
@@ -552,7 +673,7 @@ export function Whiteboard({
     if (!context) return null;
 
     context.font = `${Math.max(1, text.fontSize)}px ${HANDWRITING_FONT}`;
-    const metrics = context.measureText(text.text);
+    const metrics = context.measureText(text.rawText);
     const widthPx = Math.max(1, metrics.width);
     const ascent = metrics.actualBoundingBoxAscent || text.fontSize * 0.8;
     const descent = metrics.actualBoundingBoxDescent || text.fontSize * 0.2;
@@ -690,6 +811,13 @@ export function Whiteboard({
 
   function markCanvasDirty(): void {
     dirtyRef.current = true;
+  }
+
+  function rememberLatexMeasurement(elementId: string, width: number, height: number): void {
+    latexMeasurementsRef.current[elementId] = {
+      widthPx: width,
+      heightPx: height,
+    };
   }
 
   function pointHitsBox(point: PointNorm, box: NormalizedBBox, padding = 0.01): boolean {
@@ -943,10 +1071,17 @@ export function Whiteboard({
   function upsertText(elementId: string, payload: Record<string, unknown>): void {
     setTextItems((prev) => {
       const existing = prev.find((item) => item.elementId === elementId);
+      const resolvedText = resolveCanvasText(asString(payload["text"], ""), {
+        textFormat: payload["text_format"],
+        displayMode: payload["display_mode"],
+      });
       const next: TextItem = {
         id: `text-${elementId}`,
         elementId,
-        text: asString(payload["text"], ""),
+        rawText: resolvedText.rawText,
+        renderText: resolvedText.renderText,
+        textFormat: resolvedText.format,
+        displayMode: resolvedText.displayMode,
         x: asNumber(payload["x"], 0),
         y: asNumber(payload["y"], 0),
         fontSize: asNumber(payload["font_size"], 18),
@@ -1178,8 +1313,8 @@ export function Whiteboard({
 
     onSnapshotExporterChange(async () => {
       const stage = stageRef.current;
-      if (!stage || !dirtyRef.current || dimensions.width <= 0 || dimensions.height <= 0) {
-        return;
+      if (!stage || dimensions.width <= 0 || dimensions.height <= 0) {
+        return null;
       }
 
       const sourceCanvas = stage.toCanvas({
@@ -1189,7 +1324,7 @@ export function Whiteboard({
       exportCanvas.width = 384;
       exportCanvas.height = 384;
       const context = exportCanvas.getContext("2d");
-      if (!context) return;
+      if (!context) return null;
 
       context.fillStyle = "#ffffff";
       context.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
@@ -1206,11 +1341,8 @@ export function Whiteboard({
 
       const dataUrl = exportCanvas.toDataURL("image/jpeg", 0.5);
       const base64Data = dataUrl.split(",")[1];
-      if (!base64Data) return;
-      const sent = sendCanvasSnapshot(base64Data);
-      if (sent) {
-        dirtyRef.current = false;
-      }
+      if (!base64Data) return null;
+      return base64Data;
     });
 
     return () => {
@@ -1232,6 +1364,7 @@ export function Whiteboard({
   useEffect(() => {
     processedCountRef.current = 0;
     queueRef.current = [];
+    latexMeasurementsRef.current = {};
     setGraphViewport(null);
     setSelectedElementId(null);
 
@@ -1244,10 +1377,17 @@ export function Whiteboard({
       if (!payload || typeof payload !== "object") continue;
 
       if (element.element_type === "text") {
+        const resolvedText = resolveCanvasText(asString(payload["text"], ""), {
+          textFormat: payload["text_format"],
+          displayMode: payload["display_mode"],
+        });
         nextText.push({
           id: `text-${element.element_id}`,
           elementId: element.element_id,
-          text: asString(payload["text"], ""),
+          rawText: resolvedText.rawText,
+          renderText: resolvedText.renderText,
+          textFormat: resolvedText.format,
+          displayMode: resolvedText.displayMode,
           x: asNumber(payload["x"], 0),
           y: asNumber(payload["y"], 0),
           fontSize: asNumber(payload["font_size"], 18),
@@ -1395,6 +1535,7 @@ export function Whiteboard({
 
           try {
             if (message.type === "clear") {
+              latexMeasurementsRef.current = {};
               setTextItems([]);
               setStrokes([]);
               setHighlights([]);
@@ -1438,6 +1579,9 @@ export function Whiteboard({
                 ? payload["element_ids"].map((v) => String(v))
                 : [];
               const idSet = new Set(elementIds);
+              for (const elementId of idSet) {
+                delete latexMeasurementsRef.current[elementId];
+              }
               setStrokes((prev) => prev.filter((stroke) => !idSet.has(stroke.elementId)));
               setTextItems((prev) => prev.filter((item) => !idSet.has(item.elementId)));
               setHighlights((prev) => prev.filter((item) => !idSet.has(item.elementId)));
@@ -1811,14 +1955,11 @@ export function Whiteboard({
           {/* Text */}
           <Layer>
             {textItems.map((item) => (
-              <Text
+              <CanvasTextNode
                 key={item.id}
-                x={item.x * dimensions.width}
-                y={item.y * dimensions.width}
-                text={item.text}
-                fontSize={item.fontSize}
-                fill={item.color}
-                fontFamily={HANDWRITING_FONT}
+                item={item}
+                widthPx={dimensions.width}
+                onLatexMeasured={rememberLatexMeasurement}
               />
             ))}
           </Layer>
