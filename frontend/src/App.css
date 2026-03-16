@@ -31,24 +31,60 @@
 }
 
 .auth-card {
-  width: min(92vw, 430px);
+  width: min(92vw, 400px);
   background: #ffffff;
   border: 1px solid var(--sona-border);
+  border-radius: 20px;
+  padding: 36px 32px 32px;
+  box-shadow:
+    0 4px 12px rgba(24, 33, 47, 0.06),
+    0 20px 48px rgba(24, 33, 47, 0.10);
+  text-align: center;
+}
+
+/* ── Logo ── */
+.auth-logo {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+
+.auth-logo-icon {
+  width: 56px;
+  height: 56px;
   border-radius: 16px;
-  padding: 22px;
-  box-shadow: 0 20px 45px rgba(24, 33, 47, 0.12);
+  background: linear-gradient(135deg, var(--sona-brand) 0%, #134e4a 100%);
+  color: #fff;
+  font-size: 26px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: -0.02em;
+  box-shadow: 0 4px 14px rgba(15, 118, 110, 0.25);
 }
 
-.auth-card h1 {
-  margin: 0 0 16px;
-  font-size: 24px;
-  letter-spacing: 0.01em;
+/* ── Headings ── */
+.auth-title {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
+.auth-subtitle {
+  margin: 0 0 24px;
+  font-size: 14px;
+  color: var(--sona-muted);
+  line-height: 1.4;
+}
+
+/* ── Form ── */
 .auth-card form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+  text-align: left;
 }
 
 .auth-card label {
@@ -56,47 +92,143 @@
   flex-direction: column;
   gap: 6px;
   font-size: 13px;
-  color: var(--sona-muted);
+  font-weight: 500;
+  color: var(--sona-ink);
 }
 
 .auth-card input {
   border: 1px solid var(--sona-border);
   border-radius: 10px;
-  padding: 10px 11px;
-  font-size: 14px;
-  background: #fbfdff;
+  padding: 11px 14px;
+  font-size: 15px;
+  background: var(--sona-panel);
+  color: var(--sona-ink);
+  transition: border-color 0.15s, box-shadow 0.15s;
+  outline: none;
 }
 
+.auth-card input::placeholder {
+  color: #a3b1c6;
+}
+
+.auth-card input:focus {
+  border-color: var(--sona-brand);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.10);
+}
+
+/* ── Error ── */
 .auth-error {
   margin: 0;
   font-size: 13px;
   color: var(--sona-danger);
-}
-
-.auth-actions {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 10px 12px;
   display: flex;
+  align-items: center;
   gap: 8px;
+  text-align: left;
 }
 
-.auth-actions button {
-  flex: 1;
-  border: 1px solid #113640;
-  background: #113640;
+.auth-error-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--sona-danger);
   color: #fff;
-  border-radius: 9px;
-  padding: 10px 11px;
-  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Submit button ── */
+.auth-submit {
+  width: 100%;
+  border: none;
+  background: linear-gradient(135deg, var(--sona-brand) 0%, #134e4a 100%);
+  color: #fff;
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 15px;
   font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  margin-top: 4px;
 }
 
-.auth-actions button[type="button"] {
-  background: #ffffff;
-  color: #113640;
+.auth-submit:hover:not(:disabled) {
+  opacity: 0.92;
 }
 
-.auth-actions button:disabled {
+.auth-submit:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.auth-submit:disabled {
   opacity: 0.65;
   cursor: default;
+}
+
+/* ── Spinner ── */
+@keyframes auth-spin {
+  to { transform: rotate(360deg); }
+}
+
+.auth-spinner {
+  display: block;
+  width: 20px;
+  height: 20px;
+  border: 2.5px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: auth-spin 0.6s linear infinite;
+}
+
+/* ── Divider ── */
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 16px;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--sona-border);
+}
+
+.auth-divider span {
+  font-size: 12px;
+  color: var(--sona-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ── Switch mode link ── */
+.auth-switch {
+  background: none;
+  border: none;
+  color: var(--sona-brand);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 0.15s;
+}
+
+.auth-switch:hover {
+  opacity: 0.75;
 }
 
 .app-header {

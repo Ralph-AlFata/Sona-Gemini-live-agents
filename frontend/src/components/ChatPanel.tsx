@@ -23,7 +23,7 @@ interface LiveTurn {
 interface ChatPanelProps {
   userId: string;
   sessionId: string;
-  authToken: string;
+  getAuthToken: () => string;
   requestCanvasSnapshot?: () => Promise<void>;
 }
 
@@ -67,7 +67,7 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 export function ChatPanel({
   userId,
   sessionId,
-  authToken,
+  getAuthToken,
   requestCanvasSnapshot,
 }: ChatPanelProps) {
   const [status, setStatus] = useState<LiveConnectionStatus>("disconnected");
@@ -140,7 +140,7 @@ export function ChatPanel({
     connectLive(
       userId,
       sessionId,
-      authToken,
+      getAuthToken(),
       { proactivity, affectiveDialog },
       handleEvent,
       setStatus,
@@ -149,7 +149,8 @@ export function ChatPanel({
     return () => {
       disconnectLive();
     };
-  }, [affectiveDialog, authToken, handleEvent, proactivity, sessionId, userId]);
+    // getAuthToken is a stable ref-getter — no reconnect on token refresh
+  }, [affectiveDialog, getAuthToken, handleEvent, proactivity, sessionId, userId]);
 
   async function startAudio(): Promise<void> {
     if (audioEnabled) return;
