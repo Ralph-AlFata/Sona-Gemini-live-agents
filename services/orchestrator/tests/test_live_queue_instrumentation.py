@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from google.adk.agents.live_request_queue import LiveRequest
 from google.genai import types
 
@@ -21,6 +23,33 @@ def test_instrumented_queue_preserves_turn_complete_flag() -> None:
     request = __import__("asyncio").run(_drain(queue))
     assert request.content is not None
     assert request.turn_complete is False
+
+
+def test_effective_turn_complete_defaults_true_when_attribute_missing() -> None:
+    request = SimpleNamespace(
+        content=types.Content(role="user", parts=[types.Part.from_text(text="canvas")]),
+        blob=None,
+        activity_start=None,
+        activity_end=None,
+        close=False,
+    )
+
+    assert main._effective_live_request_turn_complete(request) is True
+
+
+def test_log_enqueue_handles_live_request_without_turn_complete_attribute() -> None:
+    queue = main.InstrumentedLiveRequestQueue(session_id="s1", turn_id=1)
+    request = SimpleNamespace(
+        content=types.Content(role="user", parts=[types.Part.from_text(text="canvas")]),
+        blob=None,
+        activity_start=None,
+        activity_end=None,
+        close=False,
+    )
+
+    queue._log_enqueue(request, "content")  # type: ignore[arg-type]
+
+    assert queue._meta_queue.qsize() == 1
 
 
 def test_infer_function_response_feedback_source() -> None:
