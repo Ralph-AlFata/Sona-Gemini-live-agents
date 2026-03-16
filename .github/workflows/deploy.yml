@@ -2,7 +2,7 @@ name: Deploy to Cloud Run
 
 on:
   push:
-    branches: [fix/added_latex]
+    branches: [main]
 
 env:
   PROJECT_ID: project-c3019c85-4428-4c46-9c2
