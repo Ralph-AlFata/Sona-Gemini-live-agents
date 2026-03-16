@@ -36,6 +36,7 @@ class DrawingClient:
         operation: str,
         payload: dict,
         command_id: str | None = None,
+        element_id: str | None = None,
         auth_token: str | None = None,
     ) -> DrawingCommandResult:
         cid = command_id or uuid4().hex[:12]
@@ -51,6 +52,7 @@ class DrawingClient:
                 "operation": operation,
                 "session_id": session_id,
                 "payload": payload,
+                "element_id": element_id,
             },
             headers=headers,
         )

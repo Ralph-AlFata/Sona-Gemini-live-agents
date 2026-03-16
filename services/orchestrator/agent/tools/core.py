@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import logging
 import math
+from uuid import uuid4
 
 from google.adk.tools import ToolContext
 from pydantic import ValidationError
 
 from agent.tools._cursor import BBox, LEFT_MARGIN, RIGHT_EDGE
 from agent.tools._cursor_store import clear_cursor, get_cursor
-from agent.tools._shared import execute_tool_command, resolve_session_id, result_to_dict
+from agent.tools._shared import (
+    execute_tool_command,
+    next_element_id,
+    resolve_session_id,
+    result_to_dict,
+)
 from agent.tools._trace import emit_draw_trace
 from agent.tools.models import DrawFreehandInput, DrawShapeInput, DrawTextInput, HighlightInput
+from drawing_client import DrawingCommandResult
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +37,23 @@ _SUPPORTED_SHAPES = {
     "polygon",
     "square",
 }
+
+
+def _queued_result(
+    *,
+    session_id: str,
+    operation: str,
+    created_element_ids: list[str],
+) -> DrawingCommandResult:
+    return DrawingCommandResult(
+        session_id=session_id,
+        command_id=uuid4().hex[:12],
+        operation=operation,
+        applied_count=1,
+        created_element_ids=created_element_ids,
+        failed_operations=[],
+        emitted_count=0,
+    )
 
 
 def _restore_cursor_from_snapshot(cursor, snapshot: dict[str, float]) -> None:
@@ -332,6 +356,7 @@ async def draw_shape(
             },
         }
     )
+    shape_element_id = next_element_id() if not data.labels else None
     result = await execute_tool_command(
         session_id=session_id,
         operation="draw_shape",
@@ -341,6 +366,16 @@ async def draw_shape(
             exclude_none=True,
         ),
         dedup_payload=dedup_payload,
+        element_id=shape_element_id,
+        fire_and_forget_result=(
+            _queued_result(
+                session_id=session_id,
+                operation="draw_shape",
+                created_element_ids=[shape_element_id],
+            )
+            if shape_element_id is not None
+            else None
+        ),
     )
     response = result_to_dict(result)
     shape_id = result.created_element_ids[0] if result.created_element_ids else None
@@ -466,11 +501,18 @@ async def draw_text(
             },
         }
     )
+    text_element_id = next_element_id()
     result = await execute_tool_command(
         session_id=session_id,
         operation="draw_text",
         payload=data.model_dump(mode="json", exclude={"next"}),
         dedup_payload=dedup_payload,
+        element_id=text_element_id,
+        fire_and_forget_result=_queued_result(
+            session_id=session_id,
+            operation="draw_text",
+            created_element_ids=[text_element_id],
+        ),
     )
     response = result_to_dict(result)
     if used_cursor and cursor is not None and result.deduplicated:
@@ -529,10 +571,17 @@ async def draw_freehand(
             },
         }
     )
+    freehand_element_id = next_element_id()
     result = await execute_tool_command(
         session_id=session_id,
         operation="draw_freehand",
         payload=data.model_dump(mode="json", exclude={"next"}),
+        element_id=freehand_element_id,
+        fire_and_forget_result=_queued_result(
+            session_id=session_id,
+            operation="draw_freehand",
+            created_element_ids=[freehand_element_id],
+        ),
     )
     response = result_to_dict(result)
     bbox_payload = _points_bbox(

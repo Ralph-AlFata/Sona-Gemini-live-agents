@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PLOT_COLOR = "#e74c3c"
 _DEFAULT_PLOT_LABEL_FONT_SIZE = 14
 _DEFAULT_PLOT_LABEL_OFFSET = 0.025
+_DEFAULT_PLOT_DELAY_MS = 1
 _GRAPH_VIEWPORT_STATE_KEY = "active_graph_viewport"
 _DEFAULT_GRAPH_VIEWPORT = {
     "x": 0.1,
@@ -497,7 +498,7 @@ async def plot_function_2d(
                 "stroke_color": stroke_color,
                 "stroke_width": stroke_width,
                 "opacity": 1.0,
-                "delay_ms": 10,
+                "delay_ms": _DEFAULT_PLOT_DELAY_MS,
                 "animate": True,
             },
         },
@@ -526,7 +527,7 @@ async def plot_function_2d(
                 "stroke_color": stroke_color,
                 "stroke_width": 1.0,
                 "opacity": 1.0,
-                "delay_ms": 10,
+                "delay_ms": _DEFAULT_PLOT_DELAY_MS,
                 "animate": True,
             },
         },

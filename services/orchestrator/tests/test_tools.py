@@ -21,9 +21,10 @@ class _FakeClient:
         operation: str,
         payload: dict,
         command_id: str | None = None,
+        element_id: str | None = None,
         auth_token: str | None = None,
     ) -> DrawingCommandResult:
-        _ = auth_token
+        _ = auth_token, element_id
         self._counter += 1
         created_ids = []
         if operation in {"draw_shape", "draw_text", "draw_freehand"}:
@@ -412,7 +413,9 @@ async def test_plot_function_uses_requested_stroke_color_and_adds_label(
         "height": 0.45,
     }
     assert _fake_client.calls[0]["payload"]["style"]["stroke_color"] == "#ff0000"
+    assert _fake_client.calls[0]["payload"]["style"]["delay_ms"] == 2
     assert _fake_client.calls[1]["payload"]["style"]["stroke_color"] == "#ff0000"
+    assert _fake_client.calls[1]["payload"]["style"]["delay_ms"] == 2
     assert _fake_client.calls[1]["payload"]["text"] == "y = 2x + 1"
 
 

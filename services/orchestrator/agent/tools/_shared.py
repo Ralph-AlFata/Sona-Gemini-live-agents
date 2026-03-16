@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from uuid import uuid4
@@ -10,12 +11,14 @@ from google.adk.tools import ToolContext
 
 from agent.tools._auth import get_current_auth_token
 from agent.tools._dedup import ToolCallDeduplicator
+from agent.tools._execution import is_fire_and_forget_enabled
 from agent.tools._trace import emit_draw_trace
 from config import settings
 from drawing_client import DrawingClient, DrawingCommandResult
 
 _client: DrawingClient | None = None
 _deduplicator: ToolCallDeduplicator | None = None
+_pending_background_tasks: set[asyncio.Task[None]] = set()
 logger = logging.getLogger(__name__)
 _DEDUP_NOTICE = (
     "This exact tool call was ALREADY successful earlier. "
@@ -71,12 +74,23 @@ def _payload_preview(payload: dict) -> str:
     return json.dumps(payload, sort_keys=True)[:1000]
 
 
+def next_element_id() -> str:
+    return f"el_{uuid4().hex[:12]}"
+
+
+def _track_background_task(task: asyncio.Task[None]) -> None:
+    _pending_background_tasks.add(task)
+    task.add_done_callback(lambda done: _pending_background_tasks.discard(done))
+
+
 async def execute_tool_command(
     *,
     session_id: str,
     operation: str,
     payload: dict,
     dedup_payload: dict | None = None,
+    element_id: str | None = None,
+    fire_and_forget_result: DrawingCommandResult | None = None,
 ) -> DrawingCommandResult:
     """Execute a drawing command immediately (synchronous tool behavior)."""
     # --- Deduplication check ---
@@ -103,19 +117,61 @@ async def execute_tool_command(
             prior_command_id=cached.command_id,
         )
 
+    command_id = fire_and_forget_result.command_id if fire_and_forget_result is not None else uuid4().hex[:12]
+
+    async def _execute_remote() -> DrawingCommandResult:
+        return await get_client().execute(
+            session_id=session_id,
+            operation=operation,
+            payload=payload,
+            command_id=command_id,
+            element_id=element_id,
+            auth_token=get_current_auth_token(),
+        )
+
+    if fire_and_forget_result is not None and is_fire_and_forget_enabled():
+        logger.info(
+            "TOOL_CALL_EXEC_ASYNC session_id=%s operation=%s payload=%s",
+            session_id,
+            operation,
+            _payload_preview(payload),
+        )
+
+        async def _run_in_background() -> None:
+            try:
+                result = await _execute_remote()
+            except Exception:
+                logger.exception(
+                    "TOOL_CALL_ASYNC_FAILED session_id=%s operation=%s payload=%s",
+                    session_id,
+                    operation,
+                    _payload_preview(payload),
+                )
+                return
+
+            emit_draw_trace(
+                {
+                    "draw_command_request": {
+                        "command_id": result.command_id,
+                        "operation": operation,
+                        "session_id": session_id,
+                        "payload": payload,
+                    },
+                    "dsl_messages": result.dsl_messages,
+                }
+            )
+
+        await dedup.put(session_id, operation, key_payload, fire_and_forget_result)
+        _track_background_task(asyncio.create_task(_run_in_background()))
+        return fire_and_forget_result
+
     logger.info(
         "TOOL_CALL_EXEC session_id=%s operation=%s payload=%s",
         session_id,
         operation,
         _payload_preview(payload),
     )
-    result = await get_client().execute(
-        session_id=session_id,
-        operation=operation,
-        payload=payload,
-        command_id=uuid4().hex[:12],
-        auth_token=get_current_auth_token(),
-    )
+    result = await _execute_remote()
 
     emit_draw_trace(
         {

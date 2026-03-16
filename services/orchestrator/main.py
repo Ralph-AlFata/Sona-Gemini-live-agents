@@ -28,6 +28,7 @@ from agent.tools._cursor_store import (
     set_cursor as set_cursor_from_snapshot,
     update_cursor_viewport,
 )
+from agent.tools._execution import fire_and_forget_tool_calls
 from agent.tools._trace import draw_trace_span
 from agent.tools._auth import auth_token_span
 from agent import root_agent
@@ -829,7 +830,7 @@ async def websocket_endpoint(
             try:
                 with draw_trace_span(
                     lambda trace_event: _record_draw_trace(active_turn_id, trace_event)
-                ), auth_token_span(bearer_token):
+                ), auth_token_span(bearer_token), fire_and_forget_tool_calls(True):
                     async for event in runtime.runner.run_live(
                         user_id=effective_user_id,
                         session_id=session_id,
@@ -1041,14 +1042,13 @@ async def websocket_endpoint(
         Supports manual turn control via JSON control messages:
           {"type": "activity_start"}  — user started speaking
           {"type": "activity_end"}    — user stopped speaking
-        Audio bytes are buffered while speaking and only sent upstream once
-        activity_end is received. This enforces push-to-talk half-duplex:
-        the assistant responds only after the user releases the button.
+        Audio bytes stream upstream while speaking, and activity_end closes
+        the current user turn.
         """
         is_speaking = False
         audio_chunk_count = 0
-        buffered_audio_chunks: list[bytes] = []
-        buffered_audio_bytes = 0
+        active_speaking_turn_id: int | None = None
+        active_speaking_audio_bytes = 0
 
         while True:
             try:
@@ -1075,13 +1075,22 @@ async def websocket_endpoint(
                         len(audio_data),
                         audio_chunk_count,
                     )
-                if (
-                    buffered_audio_bytes + len(audio_data)
-                    <= UPSTREAM_MAX_BUFFERED_AUDIO_BYTES
-                ):
-                    buffered_audio_chunks.append(audio_data)
-                    buffered_audio_bytes += len(audio_data)
-                elif buffered_audio_bytes <= UPSTREAM_MAX_BUFFERED_AUDIO_BYTES:
+                if active_speaking_turn_id is None:
+                    continue
+                if active_speaking_audio_bytes + len(audio_data) <= UPSTREAM_MAX_BUFFERED_AUDIO_BYTES:
+                    active_speaking_audio_bytes += len(audio_data)
+                    replay_chunks = turn_audio_replay_chunks.setdefault(active_speaking_turn_id, [])
+                    replay_chunks.append(audio_data)
+                    queue = live_request_queue
+                    if queue is not None:
+                        queue.send_realtime(
+                            types.Blob(
+                                mime_type="audio/pcm;rate=16000",
+                                data=audio_data,
+                            ),
+                            source="browser_audio_stream",
+                        )
+                elif active_speaking_audio_bytes <= UPSTREAM_MAX_BUFFERED_AUDIO_BYTES:
                     logger.warning(
                         "LIVE_UPSTREAM_AUDIO_BUFFER_LIMIT session_id=%s max_bytes=%s",
                         session_id,
@@ -1104,14 +1113,14 @@ async def websocket_endpoint(
                 msg_type = json_message.get("type")
 
                 if msg_type == "activity_start":
-                    if ALLOW_BARGE_IN_INTERRUPT:
-                        await stop_current_turn(
-                            reason="barge_in_activity_start",
-                            wait_for_drain=False,
-                        )
+                    trigger = "barge_in_activity_start" if ALLOW_BARGE_IN_INTERRUPT else "activity_start"
+                    queue = await start_new_turn(trigger=trigger)
                     is_speaking = True
-                    buffered_audio_chunks.clear()
-                    buffered_audio_bytes = 0
+                    active_speaking_turn_id = getattr(queue, "_turn_id", None)
+                    active_speaking_audio_bytes = 0
+                    if active_speaking_turn_id is not None:
+                        turn_audio_replay_chunks[active_speaking_turn_id] = []
+                    queue.send_activity_start(source="browser_activity_start")
                     logger.info("LIVE_ACTIVITY_START session_id=%s", session_id)
 
                 elif msg_type == "activity_end":
@@ -1122,32 +1131,24 @@ async def websocket_endpoint(
                         )
                         continue
                     is_speaking = False
-                    if not buffered_audio_chunks:
+                    queue = live_request_queue
+                    if queue is None:
                         logger.info(
-                            "LIVE_ACTIVITY_END_NO_AUDIO session_id=%s",
+                            "LIVE_ACTIVITY_END_NO_QUEUE session_id=%s",
                             session_id,
                         )
+                        active_speaking_turn_id = None
+                        active_speaking_audio_bytes = 0
                         continue
-                    queue = await start_new_turn(trigger="activity_end")
-                    queue.send_activity_start(source="browser_activity_end_flush")
-                    for chunk in buffered_audio_chunks:
-                        queue.send_realtime(
-                            types.Blob(
-                                mime_type="audio/pcm;rate=16000",
-                                data=chunk,
-                            ),
-                            source="browser_audio_flush",
-                        )
-                    queue.send_activity_end(source="browser_activity_end_flush")
-                    turn_audio_replay_chunks[getattr(queue, "_turn_id")] = list(buffered_audio_chunks)
+                    queue.send_activity_end(source="browser_activity_end")
                     logger.info(
-                        "LIVE_ACTIVITY_AUDIO_FLUSH session_id=%s chunks=%s bytes=%s",
+                        "LIVE_ACTIVITY_AUDIO_STREAM_COMPLETE session_id=%s turn_id=%s bytes=%s",
                         session_id,
-                        len(buffered_audio_chunks),
-                        buffered_audio_bytes,
+                        active_speaking_turn_id,
+                        active_speaking_audio_bytes,
                     )
-                    buffered_audio_chunks.clear()
-                    buffered_audio_bytes = 0
+                    active_speaking_turn_id = None
+                    active_speaking_audio_bytes = 0
                     logger.info("LIVE_ACTIVITY_END session_id=%s", session_id)
 
                 elif msg_type == "canvas_metrics":

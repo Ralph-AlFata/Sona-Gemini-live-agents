@@ -103,6 +103,7 @@ const HANDWRITING_FONT = '"Patrick Hand", "Comic Sans MS", cursive';
 const SHAPE_STEP_DELAY_MS = 20;
 const FREEHAND_STEP_DELAY_MS = 12;
 const SEGMENT_SAMPLES_PER_UNIT = 90;
+const MIN_STROKE_STEP_DELAY_MS = 1;
 
 function asNumber(value: unknown, fallback: number): number {
   const n = Number(value);
@@ -931,6 +932,14 @@ export function Whiteboard({
     }
   }
 
+  function resolveStrokeStepDelay(payload: Record<string, unknown>): number {
+    const requestedDelayMs = asNumber(payload["delay_ms"], SHAPE_STEP_DELAY_MS);
+    return Math.max(
+      MIN_STROKE_STEP_DELAY_MS,
+      Math.min(SHAPE_STEP_DELAY_MS, Math.round(requestedDelayMs)),
+    );
+  }
+
   function upsertText(elementId: string, payload: Record<string, unknown>): void {
     setTextItems((prev) => {
       const existing = prev.find((item) => item.elementId === elementId);
@@ -1114,7 +1123,7 @@ export function Whiteboard({
       }
     } else {
       // Shapes and deterministic polylines use linear segment interpolation.
-      await animateStroke(strokeId, smoothedPoints, SHAPE_STEP_DELAY_MS);
+      await animateStroke(strokeId, smoothedPoints, resolveStrokeStepDelay(payload));
     }
   }
 
