@@ -39,6 +39,13 @@ _SUPPORTED_SHAPES = {
 }
 
 
+def _normalize_text_format(text_format: str) -> str:
+    # Older prompts/tool traces sometimes emit "text" for plain text rendering.
+    if text_format == "text":
+        return "plain"
+    return text_format
+
+
 def _queued_result(
     *,
     session_id: str,
@@ -448,6 +455,8 @@ async def draw_text(
     """
     if next not in _VALID_NEXT_DIRECTIONS:
         raise ValueError(f"next must be one of {sorted(_VALID_NEXT_DIRECTIONS)}")
+
+    text_format = _normalize_text_format(text_format)
 
     session_id = resolve_session_id(tool_context)
     used_cursor = False

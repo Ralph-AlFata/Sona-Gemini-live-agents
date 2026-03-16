@@ -847,7 +847,9 @@ async def websocket_endpoint(
                                 if isinstance(name, str):
                                     function_calls.append(name)
 
-                        event_payload = event.model_dump(exclude_none=True, by_alias=True)
+                        event_json = event.model_dump_json(exclude_none=True, by_alias=True)
+                        event_payload = json.loads(event_json)
+                        event_payload["serverTurnId"] = active_turn_id
                         user_text = _extract_finished_transcription(
                             event_payload.get("inputTranscription")
                         )
@@ -952,7 +954,7 @@ async def websocket_endpoint(
                                 elapsed_ms,
                             )
 
-                        event_json = event.model_dump_json(exclude_none=True, by_alias=True)
+                        event_json = json.dumps(event_payload, ensure_ascii=False)
                         logger.debug(f"[SERVER] Event: {event_json}")
                         await websocket.send_text(event_json)
                         if _should_retry_empty_turn(

@@ -24,19 +24,47 @@ function isWrapped(text: string, start: string, end: string): boolean {
   return text.startsWith(start) && text.endsWith(end) && text.length > start.length + end.length;
 }
 
+function normalizeLatexSource(text: string): string {
+  let normalized = text.trim();
+
+  // Tool-call payloads sometimes arrive with backslashes escaped twice,
+  // e.g. "\\frac" instead of "\frac". KaTeX reads the doubled form as a
+  // linebreak command followed by literal text, which produces "frac..."
+  // on screen instead of an actual fraction.
+  normalized = normalized.replace(/\\\\([A-Za-z])/g, "\\$1");
+
+  return normalized;
+}
+
 function inferLatexFromText(rawText: string): { displayMode: boolean; format: CanvasTextFormat; renderText: string } {
   const trimmed = rawText.trim();
   if (isWrapped(trimmed, "$$", "$$")) {
-    return { displayMode: true, format: "latex", renderText: trimmed.slice(2, -2).trim() };
+    return {
+      displayMode: true,
+      format: "latex",
+      renderText: normalizeLatexSource(trimmed.slice(2, -2)),
+    };
   }
   if (isWrapped(trimmed, "\\[", "\\]")) {
-    return { displayMode: true, format: "latex", renderText: trimmed.slice(2, -2).trim() };
+    return {
+      displayMode: true,
+      format: "latex",
+      renderText: normalizeLatexSource(trimmed.slice(2, -2)),
+    };
   }
   if (isWrapped(trimmed, "$", "$")) {
-    return { displayMode: false, format: "latex", renderText: trimmed.slice(1, -1).trim() };
+    return {
+      displayMode: false,
+      format: "latex",
+      renderText: normalizeLatexSource(trimmed.slice(1, -1)),
+    };
   }
   if (isWrapped(trimmed, "\\(", "\\)")) {
-    return { displayMode: false, format: "latex", renderText: trimmed.slice(2, -2).trim() };
+    return {
+      displayMode: false,
+      format: "latex",
+      renderText: normalizeLatexSource(trimmed.slice(2, -2)),
+    };
   }
   return { displayMode: false, format: "plain", renderText: rawText };
 }
@@ -84,7 +112,10 @@ export function resolveCanvasText(
     rawText,
     format,
     displayMode,
-    renderText: format === "latex" ? (inferred.format === "latex" ? inferred.renderText : rawText) : rawText,
+    renderText:
+      format === "latex"
+        ? (inferred.format === "latex" ? inferred.renderText : normalizeLatexSource(rawText))
+        : rawText,
   };
 }
 
@@ -127,7 +158,9 @@ export function getLatexRender(
         displayMode,
         output: "html",
         strict: "ignore",
-        throwOnError: false,
+        // Reject malformed LaTeX so the whiteboard can fall back instead of
+        // showing misleading pseudo-math.
+        throwOnError: true,
       });
 
       const renderedElement = wrapper.firstElementChild as HTMLElement | null;

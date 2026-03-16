@@ -23,7 +23,7 @@ interface LiveTurn {
 interface ChatPanelProps {
   userId: string;
   sessionId: string;
-  authToken: string;
+  getAuthToken: () => string;
   requestCanvasSnapshot?: () => Promise<string | null>;
 }
 
@@ -67,7 +67,7 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 export function ChatPanel({
   userId,
   sessionId,
-  authToken,
+  getAuthToken,
   requestCanvasSnapshot,
 }: ChatPanelProps) {
   const [status, setStatus] = useState<LiveConnectionStatus>("disconnected");
@@ -84,6 +84,8 @@ export function ChatPanel({
   const micStreamRef = useRef<MediaStream | null>(null);
   const isSpeakingRef = useRef(false);
   const seenFinalTranscriptionsRef = useRef<Set<string>>(new Set());
+  const latestServerTurnIdRef = useRef(0);
+  const ignoreAssistantBeforeTurnRef = useRef<number | null>(null);
 
   const addTurn = useCallback((role: LiveTurn["role"], text: string) => {
     const clean = text.trim();
@@ -97,6 +99,19 @@ export function ChatPanel({
   }, []);
 
   const handleEvent = useCallback((event: LiveEventPayload) => {
+    const eventTurnId =
+      typeof event.serverTurnId === "number" && Number.isFinite(event.serverTurnId)
+        ? event.serverTurnId
+        : null;
+    if (eventTurnId !== null) {
+      latestServerTurnIdRef.current = Math.max(latestServerTurnIdRef.current, eventTurnId);
+    }
+
+    const shouldIgnoreAssistantEvent =
+      eventTurnId !== null &&
+      ignoreAssistantBeforeTurnRef.current !== null &&
+      eventTurnId < ignoreAssistantBeforeTurnRef.current;
+
     const markAndCheckDuplicate = (role: "user" | "assistant", text: string): boolean => {
       const clean = text.trim();
       if (!clean) return true;
@@ -117,7 +132,11 @@ export function ChatPanel({
         addTurn("user", event.inputTranscription.text);
       }
     }
-    if (event.outputTranscription?.finished && event.outputTranscription.text) {
+    if (
+      !shouldIgnoreAssistantEvent &&
+      event.outputTranscription?.finished &&
+      event.outputTranscription.text
+    ) {
       if (!markAndCheckDuplicate("assistant", event.outputTranscription.text)) {
         addTurn("assistant", event.outputTranscription.text);
       }
@@ -127,10 +146,20 @@ export function ChatPanel({
     for (const part of parts) {
       const audioData = part.inlineData?.data;
       const mimeType = part.inlineData?.mimeType ?? "";
-      if (audioData && mimeType.startsWith("audio/pcm") && playerNodeRef.current) {
+      if (
+        !shouldIgnoreAssistantEvent &&
+        audioData &&
+        mimeType.startsWith("audio/pcm") &&
+        playerNodeRef.current
+      ) {
         playerNodeRef.current.port.postMessage(base64ToArrayBuffer(audioData));
       }
-      if (part.text && !part.thought && !event.outputTranscription?.text) {
+      if (
+        !shouldIgnoreAssistantEvent &&
+        part.text &&
+        !part.thought &&
+        !event.outputTranscription?.text
+      ) {
         addTurn("assistant", part.text);
       }
     }
@@ -140,7 +169,7 @@ export function ChatPanel({
     connectLive(
       userId,
       sessionId,
-      authToken,
+      getAuthToken(),
       { proactivity, affectiveDialog },
       handleEvent,
       setStatus,
@@ -149,7 +178,8 @@ export function ChatPanel({
     return () => {
       disconnectLive();
     };
-  }, [affectiveDialog, authToken, handleEvent, proactivity, sessionId, userId]);
+    // getAuthToken is a stable ref-getter — no reconnect on token refresh
+  }, [affectiveDialog, getAuthToken, handleEvent, proactivity, sessionId, userId]);
 
   async function startAudio(): Promise<void> {
     if (audioEnabled) return;
@@ -206,10 +236,12 @@ export function ChatPanel({
     if (playerNodeRef.current) {
       playerNodeRef.current.port.postMessage({ command: "endOfAudio" });
     }
+    ignoreAssistantBeforeTurnRef.current = latestServerTurnIdRef.current + 1;
     isSpeakingRef.current = true;
     setIsSpeaking(true);
     const sent = sendActivityStart();
     if (!sent) {
+      ignoreAssistantBeforeTurnRef.current = null;
       isSpeakingRef.current = false;
       setIsSpeaking(false);
     }
@@ -220,6 +252,7 @@ export function ChatPanel({
     isSpeakingRef.current = false;
     setIsSpeaking(false);
     const snapshotBase64Data = await requestCanvasSnapshot?.();
+    ignoreAssistantBeforeTurnRef.current = null;
     sendActivityEnd(snapshotBase64Data ?? undefined);
   }
 

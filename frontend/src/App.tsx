@@ -42,9 +42,23 @@ function displaySessionName(session: SessionRecord): string {
 }
 
 export function App() {
-  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
+  const [authSession, setAuthSessionRaw] = useState<AuthSession | null>(null);
+  const authSessionRef = useRef<AuthSession | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
+  const authUserIdRef = useRef<string | null>(null);
+
+  // Update both state (for UI) and ref (for async reads) together
+  const setAuthSession = useCallback((session: AuthSession | null) => {
+    authSessionRef.current = session;
+    setAuthSessionRaw(session);
+  }, []);
+
+  /** Stable getter — always returns the latest token without causing re-renders. */
+  const getAuthToken = useCallback((): string => {
+    return authSessionRef.current?.idToken ?? "";
+  }, []);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
@@ -115,6 +129,7 @@ export function App() {
   const handleAuthFailure = useCallback(
     (message: string) => {
       signOut();
+      authUserIdRef.current = null;
       setAuthSession(null);
       resetSessionState();
       setAuthError(message);
@@ -122,18 +137,15 @@ export function App() {
     [resetSessionState],
   );
 
+  /** Refresh the token silently — updates the ref + localStorage but does NOT
+   *  trigger React re-renders, so WebSocket connections stay stable. */
   const refreshAuthSession = useCallback(async (session: AuthSession): Promise<AuthSession> => {
     const refreshed = await ensureValidSession(session);
     if (!refreshed) {
       throw new Error("Session expired");
     }
-    if (
-      refreshed.idToken !== session.idToken ||
-      refreshed.refreshToken !== session.refreshToken ||
-      refreshed.userId !== session.userId
-    ) {
-      setAuthSession(refreshed);
-    }
+    // Always keep the ref current so async code reads the latest token
+    authSessionRef.current = refreshed;
     return refreshed;
   }, []);
 
@@ -177,10 +189,14 @@ export function App() {
 
   useEffect(() => {
     if (!authSession) {
+      authUserIdRef.current = null;
       setSessions([]);
       switchSessionView(null);
       return;
     }
+    // Only reload sessions on sign-in / user change, not on token refreshes
+    if (authUserIdRef.current === authSession.userId) return;
+    authUserIdRef.current = authSession.userId;
     void loadSessionsForUser(authSession);
   }, [authSession, loadSessionsForUser, switchSessionView]);
 
@@ -188,8 +204,10 @@ export function App() {
     if (!authSession) return;
     let cancelled = false;
     const refresh = async () => {
+      const current = authSessionRef.current;
+      if (!current) return;
       try {
-        await refreshAuthSession(authSession);
+        await refreshAuthSession(current);
       } catch {
         if (cancelled) return;
         handleAuthFailure("Session expired. Please sign in again.");
@@ -202,7 +220,9 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [authSession, handleAuthFailure, refreshAuthSession]);
+    // Only re-create timer on login/logout, not on token refreshes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authSession?.userId, handleAuthFailure, refreshAuthSession]);
 
   useEffect(() => {
     if (!authSession || !sessionId) {
@@ -214,7 +234,9 @@ export function App() {
     let cancelled = false;
     void (async () => {
       try {
-        const fresh = await refreshAuthSession(authSession);
+        const current = authSessionRef.current;
+        if (!current) return;
+        const fresh = await refreshAuthSession(current);
         if (cancelled) return;
         connect(sessionId, fresh.idToken, handleMessage, handleStatus);
       } catch {
@@ -226,7 +248,9 @@ export function App() {
       cancelled = true;
       disconnect();
     };
-  }, [authSession, handleAuthFailure, handleMessage, handleStatus, refreshAuthSession, sessionId]);
+    // Reconnect on session change or login/logout, NOT on token refresh
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authSession?.userId, handleAuthFailure, handleMessage, handleStatus, refreshAuthSession, sessionId]);
 
   useEffect(() => {
     setMessages([]);
@@ -238,7 +262,9 @@ export function App() {
     let cancelled = false;
     void (async () => {
       try {
-        const fresh = await refreshAuthSession(authSession);
+        const current = authSessionRef.current;
+        if (!current) return;
+        const fresh = await refreshAuthSession(current);
         const elements = await fetchSessionElements(sessionId, fresh.idToken);
         if (cancelled || activeSessionIdRef.current !== sessionId) return;
         setSessionElements(
@@ -258,7 +284,9 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [authSession, handleAuthFailure, isAuthExpiredError, refreshAuthSession, sessionId]);
+    // Only refetch on session change or login/logout
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authSession?.userId, handleAuthFailure, isAuthExpiredError, refreshAuthSession, sessionId]);
 
   async function submitAuth(mode: "signin" | "signup"): Promise<void> {
     setAuthError(null);
@@ -393,14 +421,26 @@ export function App() {
   }
 
   if (!authSession) {
+    const isSignUp = authMode === "signup";
     return (
       <div className="app app-auth">
         <section className="auth-card">
-          <h1>Sona Sign In</h1>
+          <div className="auth-logo">
+            <div className="auth-logo-icon">S</div>
+          </div>
+          <h1 className="auth-title">
+            {isSignUp ? "Create your account" : "Welcome back"}
+          </h1>
+          <p className="auth-subtitle">
+            {isSignUp
+              ? "Start learning math with your AI tutor"
+              : "Sign in to continue learning"}
+          </p>
+
           <form
             onSubmit={(event) => {
               event.preventDefault();
-              void submitAuth("signin");
+              void submitAuth(isSignUp ? "signup" : "signin");
             }}
           >
             <label>
@@ -408,6 +448,7 @@ export function App() {
               <input
                 type="email"
                 autoComplete="email"
+                placeholder="you@example.com"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 required
@@ -417,28 +458,49 @@ export function App() {
               Password
               <input
                 type="password"
-                autoComplete="current-password"
+                autoComplete={isSignUp ? "new-password" : "current-password"}
+                placeholder={isSignUp ? "Create a password" : "Enter your password"}
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 required
+                minLength={6}
               />
             </label>
-            {authError ? <p className="auth-error">{authError}</p> : null}
-            <div className="auth-actions">
-              <button type="submit" disabled={authBusy}>
-                {authBusy ? "Working..." : "Sign In"}
-              </button>
-              <button
-                type="button"
-                disabled={authBusy}
-                onClick={() => {
-                  void submitAuth("signup");
-                }}
-              >
-                Create Account
-              </button>
-            </div>
+
+            {authError ? (
+              <div className="auth-error" role="alert">
+                <span className="auth-error-icon">!</span>
+                {authError}
+              </div>
+            ) : null}
+
+            <button className="auth-submit" type="submit" disabled={authBusy}>
+              {authBusy ? (
+                <span className="auth-spinner" />
+              ) : isSignUp ? (
+                "Create Account"
+              ) : (
+                "Sign In"
+              )}
+            </button>
           </form>
+
+          <div className="auth-divider">
+            <span>or</span>
+          </div>
+
+          <button
+            className="auth-switch"
+            type="button"
+            onClick={() => {
+              setAuthMode(isSignUp ? "signin" : "signup");
+              setAuthError(null);
+            }}
+          >
+            {isSignUp
+              ? "Already have an account? Sign in"
+              : "New here? Create an account"}
+          </button>
         </section>
       </div>
     );
@@ -590,7 +652,7 @@ export function App() {
                   messages={messages}
                   initialElements={sessionElements}
                   sessionId={sessionId}
-                  authToken={authSession.idToken}
+                  getAuthToken={getAuthToken}
                   onSnapshotExporterChange={(exporter) => {
                     snapshotExporterRef.current = exporter;
                   }}
@@ -600,15 +662,15 @@ export function App() {
               )}
             </section>
             {sessionId ? (
-                <ChatPanel
-                  key={sessionId}
-                  userId={authSession.userId}
-                  sessionId={sessionId}
-                  authToken={authSession.idToken}
-                  requestCanvasSnapshot={async () => {
-                    return await snapshotExporterRef.current?.() ?? null;
-                  }}
-                />
+              <ChatPanel
+                key={sessionId}
+                userId={authSession.userId}
+                sessionId={sessionId}
+                getAuthToken={getAuthToken}
+                requestCanvasSnapshot={async () => {
+                  return await snapshotExporterRef.current?.() ?? null;
+                }}
+              />
             ) : null}
           </main>
         </section>

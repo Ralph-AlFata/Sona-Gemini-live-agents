@@ -30,6 +30,24 @@ interface RefreshResponse {
   error?: { message?: string };
 }
 
+const FRIENDLY_ERRORS: Record<string, string> = {
+  EMAIL_NOT_FOUND: "No account found with that email.",
+  INVALID_PASSWORD: "Incorrect password. Please try again.",
+  INVALID_LOGIN_CREDENTIALS: "Incorrect email or password.",
+  EMAIL_EXISTS: "An account with that email already exists.",
+  "WEAK_PASSWORD": "Password must be at least 6 characters.",
+  TOO_MANY_ATTEMPTS_TRY_LATER: "Too many attempts. Please wait a moment and try again.",
+  INVALID_EMAIL: "Please enter a valid email address.",
+  MISSING_PASSWORD: "Please enter a password.",
+  USER_DISABLED: "This account has been disabled.",
+};
+
+function friendlyAuthError(raw: string | undefined): string {
+  if (!raw) return "Authentication failed. Please try again.";
+  const code = (raw.split(" :")[0] ?? "").split(":")[0]?.trim() ?? "";
+  return FRIENDLY_ERRORS[code] ?? "Authentication failed. Please try again.";
+}
+
 function getApiKey(): string {
   const key = import.meta.env.VITE_FIREBASE_API_KEY;
   if (typeof key !== "string" || key.trim().length === 0) {
@@ -129,8 +147,7 @@ async function authenticate(
 
   const body = (await response.json()) as FirebaseAuthResponse;
   if (!response.ok) {
-    const message = body.error?.message ?? "Firebase auth failed";
-    throw new Error(message);
+    throw new Error(friendlyAuthError(body.error?.message));
   }
 
   const session = normalizeAuthResponse(body);

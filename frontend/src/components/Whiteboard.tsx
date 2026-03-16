@@ -104,7 +104,7 @@ interface WhiteboardProps {
   messages: DSLMessageRaw[];
   initialElements: SessionElementSnapshot[];
   sessionId: string;
-  authToken: string;
+  getAuthToken: () => string;
   onSnapshotExporterChange?: (exporter: (() => Promise<string | null>) | null) => void;
 }
 
@@ -599,7 +599,7 @@ export function Whiteboard({
   messages,
   initialElements,
   sessionId,
-  authToken,
+  getAuthToken,
   onSnapshotExporterChange,
 }: WhiteboardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -869,7 +869,7 @@ export function Whiteboard({
           animate: false,
         },
       },
-      authToken,
+      getAuthToken(),
       { source: "user" },
     );
   }
@@ -894,7 +894,7 @@ export function Whiteboard({
             animate: false,
           },
         },
-        authToken,
+        getAuthToken(),
         { source: "user" },
       );
       return;
@@ -925,7 +925,7 @@ export function Whiteboard({
             animate: false,
           },
         },
-        authToken,
+        getAuthToken(),
         { source: "user" },
       );
 
@@ -948,7 +948,7 @@ export function Whiteboard({
               animate: false,
             },
           },
-          authToken,
+          getAuthToken(),
           { source: "user" },
         );
         await postDraw(
@@ -966,7 +966,7 @@ export function Whiteboard({
               animate: false,
             },
           },
-          authToken,
+          getAuthToken(),
           { source: "user" },
         );
       }
@@ -992,7 +992,7 @@ export function Whiteboard({
           animate: false,
         },
       },
-      authToken,
+      getAuthToken(),
       { source: "user" },
     );
   }
@@ -1004,7 +1004,7 @@ export function Whiteboard({
       sessionId,
       "move_elements",
       { element_ids: [elementId], dx, dy },
-      authToken,
+      getAuthToken(),
       { source: "user" },
     );
   }
@@ -1012,7 +1012,7 @@ export function Whiteboard({
   async function deleteSelectedElement(elementId: string): Promise<void> {
     if (!elementId) return;
     markCanvasDirty();
-    await deleteElement(sessionId, elementId, authToken);
+    await deleteElement(sessionId, elementId, getAuthToken());
   }
 
   const {

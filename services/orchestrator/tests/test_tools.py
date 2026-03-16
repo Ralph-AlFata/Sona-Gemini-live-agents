@@ -702,6 +702,18 @@ async def test_shape_then_text_auto_placement_avoids_overlap(
 
 
 @pytest.mark.asyncio
+async def test_draw_text_normalizes_legacy_text_format(
+    monkeypatch: pytest.MonkeyPatch,
+    _fake_client: _FakeClient,
+) -> None:
+    monkeypatch.setattr(core, "resolve_session_id", lambda _ctx: "s_cursor")
+
+    await core.draw_text(text="Legacy text", text_format="text")
+
+    assert _fake_client.calls[0]["payload"]["text_format"] == "plain"
+
+
+@pytest.mark.asyncio
 async def test_shape_auto_size_normalizes_large_dimensions(
     monkeypatch: pytest.MonkeyPatch,
     _fake_client: _FakeClient,

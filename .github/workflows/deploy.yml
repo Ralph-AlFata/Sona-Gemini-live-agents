@@ -23,14 +23,6 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-
-      - name: Deploy all services
-        run: bash infra/deploy.sh
-        env:
-          PROJECT_ID: project-c3019c85-4428-4c46-9c2
-          REGION: us-central1
-          BUCKET: sona-canvases-your-suffix
-
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
@@ -39,7 +31,6 @@ jobs:
         run: |
           docker build -t $REGISTRY/sona-session:$GITHUB_SHA ./services/session
           docker push $REGISTRY/sona-session:$GITHUB_SHA
-
       - name: Deploy session
         run: |
           gcloud run deploy sona-session \
@@ -49,13 +40,11 @@ jobs:
             --allow-unauthenticated \
             --service-account=sona-session-sa@$PROJECT_ID.iam.gserviceaccount.com \
             --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,USE_FIRESTORE=true,FIRESTORE_DATABASE=(default),GCS_BUCKET=sona-canvases-your-suffix,SESSION_AUTH_ENABLED=true"
-
       # ── Drawing ──────────────────────────────────────────────────────────────
       - name: Build and push drawing
         run: |
           docker build -t $REGISTRY/sona-drawing:$GITHUB_SHA ./services/drawing
           docker push $REGISTRY/sona-drawing:$GITHUB_SHA
-
       - name: Deploy drawing
         run: |
           SESSION_URL=$(gcloud run services describe sona-session --region=$REGION --format='value(status.url)')
@@ -67,13 +56,11 @@ jobs:
             --timeout=3600 \
             --service-account=sona-drawing-sa@$PROJECT_ID.iam.gserviceaccount.com \
             --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,USE_FIRESTORE=true,FIRESTORE_DATABASE=(default),DRAWING_AUTH_ENABLED=true,SESSION_SERVICE_URL=$SESSION_URL"
-
       # ── Orchestrator ─────────────────────────────────────────────────────────
       - name: Build and push orchestrator
         run: |
           docker build -t $REGISTRY/sona-orchestrator:$GITHUB_SHA ./services/orchestrator
           docker push $REGISTRY/sona-orchestrator:$GITHUB_SHA
-
       - name: Deploy orchestrator
         run: |
           SESSION_URL=$(gcloud run services describe sona-session --region=$REGION --format='value(status.url)')
@@ -86,7 +73,6 @@ jobs:
             --timeout=3600 \
             --service-account=sona-orchestrator-sa@$PROJECT_ID.iam.gserviceaccount.com \
             --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,ORCHESTRATOR_AUTH_ENABLED=true,SESSION_SERVICE_URL=$SESSION_URL,DRAWING_SERVICE_URL=$DRAWING_URL"
-
       # ── Frontend ─────────────────────────────────────────────────────────────
       - name: Build and push frontend
         run: |
@@ -98,7 +84,6 @@ jobs:
             --build-arg VITE_ORCHESTRATOR_WS_BASE=${{ secrets.VITE_ORCHESTRATOR_WS_BASE }} \
             -t $REGISTRY/sona-frontend:$GITHUB_SHA ./frontend
           docker push $REGISTRY/sona-frontend:$GITHUB_SHA
-
       - name: Deploy frontend
         run: |
           gcloud run deploy sona-frontend \
@@ -106,7 +91,6 @@ jobs:
             --region=$REGION \
             --port=3000 \
             --allow-unauthenticated
-
       # ── Fix CORS ─────────────────────────────────────────────────────────────
       - name: Update CORS on all backends
         run: |
@@ -114,4 +98,3 @@ jobs:
           gcloud run services update sona-session      --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
           gcloud run services update sona-drawing      --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
           gcloud run services update sona-orchestrator --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
-

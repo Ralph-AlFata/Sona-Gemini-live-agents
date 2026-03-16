@@ -13,6 +13,7 @@ export interface LiveEventPayload {
   author?: string;
   invocationId?: string;
   interrupted?: boolean;
+  serverTurnId?: number;
   inputTranscription?: {
     text?: string;
     finished?: boolean;
