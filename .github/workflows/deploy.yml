@@ -4,14 +4,11 @@ on:
   push:
     branches: [main]
 
-<<<<<<< HEAD
-=======
 env:
   PROJECT_ID: project-c3019c85-4428-4c46-9c2
   REGION: us-central1
   REGISTRY: us-central1-docker.pkg.dev/project-c3019c85-4428-4c46-9c2/cloud-run-source-deploy
 
->>>>>>> origin/main
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -26,14 +23,14 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-<<<<<<< HEAD
+
       - name: Deploy all services
         run: bash infra/deploy.sh
         env:
           PROJECT_ID: project-c3019c85-4428-4c46-9c2
           REGION: us-central1
           BUCKET: sona-canvases-your-suffix
-=======
+
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
@@ -117,4 +114,4 @@ jobs:
           gcloud run services update sona-session      --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
           gcloud run services update sona-drawing      --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
           gcloud run services update sona-orchestrator --region=$REGION --update-env-vars="FRONTEND_URL=$FRONTEND_URL"
->>>>>>> origin/main
+
